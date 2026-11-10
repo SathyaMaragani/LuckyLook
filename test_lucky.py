@@ -56,6 +56,24 @@ with tempfile.TemporaryDirectory() as tmp:
             pass
         msvcrt.locking(held.fileno(), msvcrt.LK_UNLCK, 1)
 
+    # live updates: new, edited, renamed folder, deleted
+    (tmp / "live").mkdir()
+    (tmp / "live" / "plan.md").write_text("ostrich budget 77", encoding="utf-8")
+    indexer.update({str(tmp / "live")}, log=quiet)
+    assert str(tmp / "live" / "plan.md") in agent.search_content("ostrich")
+    time.sleep(0.05)
+    (tmp / "live" / "plan.md").write_text("emu budget 88", encoding="utf-8")
+    indexer.update({str(tmp / "live" / "plan.md")}, log=quiet)
+    assert agent.search_content("ostrich") == "no matches" and "plan.md" in agent.search_content("emu")
+    (tmp / "live").rename(tmp / "moved")  # Windows reports only the folder's old and new name
+    indexer.update({str(tmp / "live"), str(tmp / "moved")}, log=quiet)
+    assert str(tmp / "moved" / "plan.md") in agent.find_files(name="plan") and "\\live\\" not in agent.find_files(name="plan")
+    (tmp / "moved" / "plan.md").unlink()
+    indexer.update({str(tmp / "moved" / "plan.md")}, log=quiet)
+    assert "0 matching" in agent.find_files(name="plan") and agent.search_content("emu") == "no matches"
+    assert not indexer.live("C:\\Users\\x\\AppData\\Local\\cache.bin") and not indexer.live(str(indexer.DB) + "-wal")
+    assert indexer.live("C:\\Users\\x\\Documents\\notes.md")
+
     hist = tmp / "History"  # a made-up Edge/Chrome history
     with closing(sqlite3.connect(hist)) as con:
         noon = datetime.datetime.combine(datetime.date.today(), datetime.time(12)).timestamp()
@@ -93,6 +111,16 @@ with tempfile.TemporaryDirectory() as tmp:
 json.dumps(agent.SCHEMAS)
 assert list(lucky.find_paths("see `C:\\My Docs\\cv.pdf` and D:\\x\\y.txt.")) == [
     ("C:\\My Docs\\cv.pdf", 5), ("D:\\x\\y.txt", 28)]
+with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as watched:  # not in AppData: live() skips that
+    w = indexer.Watcher([watched])
+    time.sleep(0.3)
+    Path(watched, "fresh.txt").write_text("hi", encoding="utf-8")
+    for _ in range(40):  # Windows reports it within milliseconds; allow 2 s
+        if str(Path(watched, "fresh.txt")) in (w.paths or ()):
+            break
+        time.sleep(0.05)
+    assert str(Path(watched, "fresh.txt")) in w.take(), "the Watcher didn't see a new file"
+
 root = lucky.tk.Tk()  # answers show markdown as styles, not symbols
 t = lucky.tk.Text(root)
 t.insert("end", "› q\n## Drives\n- **C:** `78 GB` free\n* 2 ** 3 = 8\n")

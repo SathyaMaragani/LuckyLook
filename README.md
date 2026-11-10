@@ -46,7 +46,7 @@ python -m venv .venv
 .venv\Scripts\pythonw lucky.py
 ```
 
-LuckyLook now runs in the background: press **Ctrl+Alt+L**. The first time, it indexes every fixed drive, and that can take an hour or more on a big disk. The status line at the bottom of the popup shows progress, and you can ask questions meanwhile. After that it re-indexes every 6 hours, and only changed files are read again.
+LuckyLook now runs in the background: press **Ctrl+Alt+L**. The first time, it indexes every fixed drive, and that can take an hour or more on a big disk. The status line at the bottom of the popup shows progress, and you can ask questions meanwhile. After that it stays up to date live: a file you save, rename, move or delete shows up in answers within about 5 seconds. App and system folders (AppData, Program Files) change constantly, so they're refreshed by a full pass every 6 hours instead, and that pass only re-reads changed files.
 
 Optional: copy `me.example.md` to `me.md` and tell it about yourself (your name, your work, where your projects live).
 

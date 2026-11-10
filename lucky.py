@@ -24,7 +24,8 @@ import indexer  # noqa: E402
 MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, WM_HOTKEY = 0x1, 0x2, 0x4000, 0x312
 HOTKEY = (MOD_CONTROL | MOD_ALT, ord("L"))  # Ctrl+Alt+L  (Ctrl+Alt+Space is taken by another app here)
 HOTKEY_NAME = "Ctrl+Alt+L"
-REINDEX_HOURS = 6
+REINDEX_HOURS = 6  # full pass: the safety net for anything the live updates miss (and app/system folders)
+LIVE_SECONDS = 5  # how soon a file you save, rename or delete shows up in answers
 KEEP_HISTORY = 12  # messages of earlier conversation sent along with each question
 WIDGET = True  # tab hanging off the top of the screen: hover pulls it down, click opens the popup (/widget hides it)
 PEEK = 6  # pixels of the tab left on screen while it's tucked away
@@ -123,15 +124,28 @@ class Popup:
                 user32.DispatchMessageW(ctypes.byref(msg))  # tray clicks
 
     def index_loop(self):
+        """A full pass now and every REINDEX_HOURS; in between, file changes reach the index within LIVE_SECONDS."""
+        changes = indexer.Watcher(indexer.ROOTS)  # before the full pass, so changes made during it aren't missed
         while True:
-            wait = REINDEX_HOURS * 3600
+            next_full = time.time() + REINDEX_HOURS * 3600
             try:
                 indexer.index(log=lambda m: self.q.put(("status", m)))
             except Exception as e:  # e.g. indexer.py is running by hand right now
                 print(f"index error: {e}", flush=True)  # lands in lucky.log
                 self.q.put(("status", f"index error: {e} (retrying in 10 min)"))
-                wait = 600
-            time.sleep(wait)
+                next_full = time.time() + 600
+            while time.time() < next_full:
+                time.sleep(LIVE_SECONDS)
+                paths = changes.take()
+                if paths is None:  # Windows dropped some changes: only a full pass can catch up
+                    break
+                if paths:
+                    try:
+                        indexer.update(paths, log=lambda m: None)
+                    except RuntimeError:  # indexer.py running by hand: apply these when it's done
+                        changes.give_back(paths)
+                    except Exception as e:
+                        print(f"live index error: {e}", flush=True)
 
     def answer(self, question, start):
         try:
