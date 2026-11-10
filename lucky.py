@@ -1,4 +1,4 @@
-"""LuckyLook popup. Press Ctrl+Alt+L anywhere in Windows to ask about your laptop.
+"""LuckyLook popup. Press Ctrl+Alt+L anywhere in Windows to ask about your PC.
 
 Run:  pythonw lucky.py      (no console window; errors go to lucky.log)
 """
@@ -76,7 +76,7 @@ class Popup:
         self.entry = tk.Entry(top, font=(FONT, 18), bg=GLASS, fg=FG, insertbackground=FG, relief="flat",
                               highlightthickness=0, selectbackground=SELECT)
         self.entry.pack(side="left", fill="x", expand=True)
-        self.hint = tk.Label(top, text="Ask about this laptop…", font=(FONT, 18), fg=DIM, bg=GLASS, cursor="xterm")
+        self.hint = tk.Label(top, text="Ask about this PC…", font=(FONT, 18), fg=DIM, bg=GLASS, cursor="xterm")
         self.hint.bind("<Button-1>", lambda e: self.entry.focus_set())
         self.entry.bind("<KeyRelease>", self.show_hint)
         tk.Frame(r, bg=SEP, height=1).pack(fill="x")
@@ -90,12 +90,14 @@ class Popup:
 
         self.out.tag_config("you", foreground=DIM)
         self.out.tag_config("path", foreground=LINK, underline=True)
+        self.out.tag_config("bold", font=(TEXT_FONT, 11, "bold"))
+        self.out.tag_config("code", font=("Consolas", 11), foreground="#ffd479")
         self.out.tag_bind("path", "<Enter>", lambda e: self.out.config(cursor="hand2"))
         self.out.tag_bind("path", "<Leave>", lambda e: self.out.config(cursor="arrow"))
         self.entry.bind("<Return>", self.submit)
         r.bind("<Escape>", lambda e: self.toggle())
         r.withdraw()
-        self.write("Ask anything about this laptop.   Enter: ask · Esc: hide · /new: fresh chat · "
+        self.write("Ask anything about this PC.   Enter: ask · Esc: hide · /new: fresh chat · "
                    "/widget: show or hide the top tab · /quit: exit\n"
                    "Click a path to open it, right-click to show it in Explorer.\n", "you")
 
@@ -212,6 +214,7 @@ class Popup:
                     self.status.config(text=val)
                 elif kind == "done":
                     self.linkify(val)
+                    render_markdown(self.out, val)
                     self.write("\n")
                     self.busy = False
                     self.status.config(text="")
@@ -332,7 +335,7 @@ class BITMAPINFOHEADER(ctypes.Structure):
 
 
 def frosted(x, y, w, h):
-    """Apple-style frosted glass, done by hand because Windows' own acrylic draws solid on this laptop: a blurred,
+    """Apple-style frosted glass, done by hand because Windows' own acrylic can draw solid (it does on some PCs): a blurred,
     darkened copy of the screen at x, y, w, h, as PPM image data. Blur = shrink 40x, then stretch back, with GDI
     averaging the pixels on the way down and GDI+ smoothing them on the way up."""
     u, g, gp, H = ctypes.windll.user32, ctypes.windll.gdi32, ctypes.windll.gdiplus, ctypes.c_void_p
@@ -370,6 +373,30 @@ def frosted(x, y, w, h):
     rgb = bytearray(w * h * 3)
     rgb[0::3], rgb[1::3], rgb[2::3] = bgra[2::4], bgra[1::4], bgra[0::4]
     return b"P6 %d %d 255\n" % (w, h) + rgb
+
+
+MARKDOWN = re.compile(r"\*\*(.+?)\*\*|`([^`\n]+)`|^(#{1,4} |[-*] )", re.M)
+
+
+def render_markdown(text, start):
+    """Shows the answer's light markdown as styles: **bold**, `code`, # headings (bold), - bullets (•).
+    Works on the finished answer, from start to the end of the Text widget."""
+    state = text.cget("state")
+    text.config(state="normal")
+    for m in reversed(list(MARKDOWN.finditer(text.get(start, "end")))):  # last first: earlier offsets stay right
+        a = f"{start}+{m.start()}c"
+        if m[3] and m[3][0] == "#":
+            text.tag_add("bold", f"{a}+{len(m[3])}c", f"{a} lineend")
+            text.delete(a, f"{a}+{len(m[3])}c")
+        elif m[3]:
+            text.delete(a, f"{a}+1c")
+            text.insert(a, "•")
+        else:
+            inner, mark = (m[1], 2) if m[1] else (m[2], 1)
+            text.tag_add("bold" if m[1] else "code", f"{a}+{mark}c", f"{a}+{mark + len(inner)}c")
+            text.delete(f"{a}+{mark + len(inner)}c", f"{a}+{2 * mark + len(inner)}c")
+            text.delete(a, f"{a}+{mark}c")
+    text.config(state=state)
 
 
 def find_paths(text):

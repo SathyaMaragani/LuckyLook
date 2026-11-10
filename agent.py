@@ -1,4 +1,4 @@
-"""LuckyLook brain: a local Ollama model plus read-only tools over this laptop.
+"""LuckyLook brain: a local Ollama model plus read-only tools over this PC.
 
 Run:  python agent.py "where is my resume?"
 """
@@ -70,7 +70,7 @@ def like(s):
 # ---------- tools (read-only, except remember) ----------
 
 def search_content(query: str, limit: int = 10):
-    """Full-text search INSIDE documents, PDFs, notes and code on this laptop. Returns best matching files with snippets."""
+    """Full-text search INSIDE documents, PDFs, notes and code on this PC. Returns best matching files with snippets."""
     words = re.findall(r"\w+", query)
     if not words:
         return "empty query"
@@ -85,7 +85,7 @@ def search_content(query: str, limit: int = 10):
 
 def find_files(name: str = "", ext: str = "", under: str = "", min_size_mb: float = 0,
                modified_within_days: float = 0, sort: str = "recent", limit: int = 20):
-    """Find files anywhere on the laptop. name: words that must appear in the file's name or folder path.
+    """Find files anywhere on the PC. name: words that must appear in the file's name or folder path.
     ext: extension(s) like "pdf,docx". under: only inside this folder. sort: "recent", "largest" or "name".
     Also reports the total count and size of all matches."""
     where, args = ["1=1"], []
@@ -118,7 +118,7 @@ def find_files(name: str = "", ext: str = "", under: str = "", min_size_mb: floa
 
 
 def find_folders(name: str, under: str = "", limit: int = 20):
-    """Find folders anywhere on the laptop whose folder name contains these words (e.g. "proj" finds "MyProjects").
+    """Find folders anywhere on the PC whose folder name contains these words (e.g. "proj" finds "MyProjects").
     Results closest to the drive root come first. Use list_dir on a result to see what's inside."""
     where, args = [], []
     for word in name.split():
@@ -360,7 +360,7 @@ def system_prompt():
         return p.read_text(encoding="utf-8").strip() if p.exists() else ""
     now = datetime.datetime.now()
     yesterday = now - datetime.timedelta(days=1)  # spelled out: the 9B model got "yesterday" wrong doing the maths itself
-    return f"""You are LuckyLook, a private assistant running entirely on the user's Windows laptop.
+    return f"""You are LuckyLook, a private assistant running entirely on the user's Windows PC.
 Use your tools to look things up on this computer instead of guessing. If a search finds nothing, try other keywords,
 or find_files by name, before giving up. Prefer find_files for "where is", search_content for "what does it say".
 When the user names a folder ("my projects folder"), find_folders it, then list_dir the best match.

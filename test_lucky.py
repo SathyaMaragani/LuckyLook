@@ -93,4 +93,12 @@ with tempfile.TemporaryDirectory() as tmp:
 json.dumps(agent.SCHEMAS)
 assert list(lucky.find_paths("see `C:\\My Docs\\cv.pdf` and D:\\x\\y.txt.")) == [
     ("C:\\My Docs\\cv.pdf", 5), ("D:\\x\\y.txt", 28)]
+root = lucky.tk.Tk()  # answers show markdown as styles, not symbols
+t = lucky.tk.Text(root)
+t.insert("end", "› q\n## Drives\n- **C:** `78 GB` free\n* 2 ** 3 = 8\n")
+lucky.render_markdown(t, "2.0")
+assert t.get("1.0", "end-1c") == "› q\nDrives\n• C: 78 GB free\n• 2 ** 3 = 8\n", t.get("1.0", "end-1c")
+assert t.get(*t.tag_ranges("code")) == "78 GB" and [t.get(a, b) for a, b in zip(*[iter(t.tag_ranges("bold"))] * 2)] == [
+    "Drives", "C:"]
+root.destroy()
 print("ok")

@@ -4,6 +4,10 @@
 
 **A private AI for your Windows PC that knows what's on it.** Press **Ctrl+Alt+L** anywhere (or click the thin blue tab hanging from the top of your screen), ask a question, and it answers from your own computer:
 
+<img src="assets/screenshot.png" width="640" alt="The LuckyLook popup: frosted glass over a colourful background, answering how much free space each drive has">
+
+<img src="assets/screenshot-tab.png" width="320" alt="The LuckyLook tab at the top of the screen, pulled down on hover">
+
 - **Files and documents:** "where is my resume?", "what did I quote the client for the logo?", "what's eating my disk?". Searches inside documents, PDFs, Word files, notes and code.
 - **Your PC:** free space, installed apps, what's using memory, battery, specs.
 - **What you were doing:** recently opened files, and websites you visited (Edge and Chrome history).
@@ -18,11 +22,17 @@ The popup is a frosted-glass bar in the style of macOS Spotlight. File paths in 
 ## Requirements
 
 - Windows 11 (Windows 10 works, just without rounded corners)
-- [Python](https://www.python.org/downloads/) 3.10 or newer, with "Add python.exe to PATH" ticked
-- [Ollama](https://ollama.com/download)
+- [Python](https://www.python.org/downloads/) 3.10 or newer, and [Ollama](https://ollama.com/download). The installer sets these up for you if they're missing.
 - A graphics card with 8 GB of memory is ideal. It also runs on the CPU, just slower.
 
-## Setup
+## Install (easy way)
+
+1. On this page, click **Code › Download ZIP**, then unzip it somewhere permanent (for example `Documents\LuckyLook`).
+2. Double-click **`install.bat`**.
+
+It checks for Python and Ollama and installs them with winget if they're missing. It then downloads the AI model (several GB, one time only), sets everything up, runs a self-check, adds LuckyLook to Windows startup and starts it. Don't want it to start with Windows? Run `install.bat -NoStartup`.
+
+## Install (by hand)
 
 In a terminal:
 
@@ -35,8 +45,6 @@ python -m venv .venv
 .venv\Scripts\python test_lucky.py
 .venv\Scripts\pythonw lucky.py
 ```
-
-(No git? Use **Code › Download ZIP** on GitHub, unzip it, and run the commands from `ollama pull` onwards inside the folder.)
 
 LuckyLook now runs in the background: press **Ctrl+Alt+L**. The first time, it indexes every fixed drive, and that can take an hour or more on a big disk. The status line at the bottom of the popup shows progress, and you can ask questions meanwhile. After that it re-indexes every 6 hours, and only changed files are read again.
 
@@ -78,7 +86,8 @@ Put overrides in `local_settings.py`: `MODEL`, `ROOTS` (which drives to index), 
 - `lucky.py`: the popup, hotkey and top tab. Errors go to `lucky.log`.
 - `agent.py`: the model and its tools. Also usable from a terminal: `.venv\Scripts\python agent.py "where is my resume?"`
 - `indexer.py`: builds `index.db`. Run it by hand for a folder: `.venv\Scripts\python indexer.py D:\Projects`
-- `test_lucky.py`: self-check. `bench.py`: model comparison. `assets/`: the logo.
+- `install.bat` / `install.ps1`: the one-click installer. Safe to run again: it skips what's already done.
+- `test_lucky.py`: self-check. `bench.py`: model comparison. `assets/`: the logo and screenshots.
 
 ## License
 
