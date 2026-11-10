@@ -167,7 +167,8 @@ vram, ram = agent.specs()
 assert ram > 1 and vram >= 0
 assert list(lucky.find_paths("see `C:\\My Docs\\cv.pdf` and D:\\x\\y.txt.")) == [
     ("C:\\My Docs\\cv.pdf", 5), ("D:\\x\\y.txt", 28)]
-with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as watched:  # not in AppData: live() skips that
+real_live, indexer.live = indexer.live, lambda path: True  # LuckyLook's folder may be anywhere, even in AppData
+with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as watched:
     w = indexer.Watcher([watched])
     time.sleep(0.3)
     Path(watched, "fresh.txt").write_text("hi", encoding="utf-8")
@@ -176,6 +177,7 @@ with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as watched:  # not i
             break
         time.sleep(0.05)
     assert str(Path(watched, "fresh.txt")) in w.take(), "the Watcher didn't see a new file"
+indexer.live = real_live
 
 root = lucky.tk.Tk()  # answers show markdown as styles, not symbols
 t = lucky.tk.Text(root)
