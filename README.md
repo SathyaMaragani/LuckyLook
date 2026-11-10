@@ -60,7 +60,8 @@ $s = (New-Object -ComObject WScript.Shell).CreateShortcut("$([Environment]::GetF
 
 | | |
 |---|---|
-| **Ctrl+Alt+L**, or click the top tab | open or close the popup |
+| **Ctrl+Alt+L**, click the top tab, or click the tray icon | open or close the popup |
+| right-click the tray icon | menu: open, show or hide the top tab, quit |
 | **Enter** / **Esc** | ask / hide |
 | `/new` | start a fresh conversation |
 | `/widget` | hide or show the top tab |

@@ -102,6 +102,7 @@ class Popup:
                    "Click a path to open it, right-click to show it in Explorer.\n", "you")
 
         self.make_widget()
+        self.tray = None  # made on the hotkey thread, whose message loop delivers its clicks
         threading.Thread(target=self.hotkey_loop, daemon=True).start()
         r.after(30, self.pump)
 
@@ -113,10 +114,13 @@ class Popup:
             self.q.put(("fatal", f"{HOTKEY_NAME} is already in use (LuckyLook already running, or another app). Change HOTKEY in lucky.py."))
             return
         threading.Thread(target=self.index_loop, daemon=True).start()
+        self.tray = Tray(self.q)
         msg = wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             if msg.message == WM_HOTKEY:
                 self.q.put(("toggle", None))
+            else:
+                user32.DispatchMessageW(ctypes.byref(msg))  # tray clicks
 
     def index_loop(self):
         while True:
@@ -145,7 +149,7 @@ class Popup:
         """A tab hanging off the top centre of the screen: hover pulls it down, click opens the popup."""
         w = self.widget = tk.Toplevel(self.root, bg=PANEL)
         w.overrideredirect(True)
-        w.attributes("-topmost", True)
+        w.attributes("-topmost", True, "-toolwindow", True)  # tool window: no taskbar button
         # pady = PEEK, so while tucked away only padding shows, never a sliver of text
         self.tab = tk.Label(w, text=" LuckyLook", image=self.logo20, compound="left", font=(FONT, 10), fg=FG, padx=14,
                             pady=PEEK, cursor="hand2")
@@ -208,6 +212,11 @@ class Popup:
                 kind, val = self.q.get_nowait()
                 if kind == "toggle":
                     self.toggle()
+                elif kind == "widget":
+                    self.widget_on = not self.widget_on  # watch_fullscreen moves the tab within a second
+                elif kind == "quit":
+                    self.quit()
+                    return
                 elif kind == "text":
                     self.write(val)
                 elif kind == "status":
@@ -226,6 +235,11 @@ class Popup:
         except queue.Empty:
             pass
         self.root.after(30, self.pump)
+
+    def quit(self):
+        if self.tray:
+            self.tray.remove()  # else a dead icon lingers in the tray until the mouse passes over it
+        self.root.destroy()
 
     def toggle(self):
         r = self.root
@@ -272,7 +286,7 @@ class Popup:
             return
         self.entry.delete(0, "end")
         if question == "/quit":
-            self.root.destroy()
+            self.quit()
             return
         if question == "/widget":
             self.widget_on = not self.widget_on  # watch_fullscreen moves the tab within a second
@@ -373,6 +387,84 @@ def frosted(x, y, w, h):
     rgb = bytearray(w * h * 3)
     rgb[0::3], rgb[1::3], rgb[2::3] = bgra[2::4], bgra[1::4], bgra[0::4]
     return b"P6 %d %d 255\n" % (w, h) + rgb
+
+
+LRESULT = ctypes.c_ssize_t
+WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+WM_TRAY, WM_LBUTTONUP, WM_RBUTTONUP = 0x8001, 0x0202, 0x0205
+
+
+class WNDCLASSW(ctypes.Structure):
+    _fields_ = [("style", wintypes.UINT), ("proc", WNDPROC), ("cls_extra", ctypes.c_int), ("wnd_extra", ctypes.c_int),
+                ("instance", wintypes.HINSTANCE), ("icon", wintypes.HICON), ("cursor", wintypes.HANDLE),
+                ("background", wintypes.HBRUSH), ("menu_name", wintypes.LPCWSTR), ("class_name", wintypes.LPCWSTR)]
+
+
+class NOTIFYICONDATAW(ctypes.Structure):
+    _fields_ = [("size", wintypes.DWORD), ("hwnd", wintypes.HWND), ("id", wintypes.UINT), ("flags", wintypes.UINT),
+                ("callback", wintypes.UINT), ("icon", wintypes.HICON), ("tip", wintypes.WCHAR * 128),
+                ("state", wintypes.DWORD), ("state_mask", wintypes.DWORD), ("info", wintypes.WCHAR * 256),
+                ("version", wintypes.UINT), ("info_title", wintypes.WCHAR * 64), ("info_flags", wintypes.DWORD),
+                ("guid", ctypes.c_byte * 16), ("balloon_icon", wintypes.HICON)]
+
+
+class Tray:
+    """LuckyLook's icon in the system tray. Click: open or close the popup. Right-click: a menu.
+    Runs on the hotkey thread (its message loop delivers the clicks) and talks to the UI only through q."""
+    MENU = [(1, f"Open LuckyLook\t{HOTKEY_NAME}", "toggle"), (2, "Show or hide the top tab", "widget"),
+            (0, None, None), (3, "Quit LuckyLook", "quit")]
+
+    def __init__(self, q):
+        u, H = ctypes.windll.user32, ctypes.c_void_p
+        u.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        u.DefWindowProcW.restype = LRESULT
+        u.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD] + \
+            [ctypes.c_int] * 4 + [wintypes.HWND, H, H, H]
+        u.CreateWindowExW.restype = wintypes.HWND
+        u.LoadImageW.restype = wintypes.HICON
+        u.CreatePopupMenu.restype = H
+        u.AppendMenuW.argtypes = [H, wintypes.UINT, ctypes.c_size_t, wintypes.LPCWSTR]
+        u.TrackPopupMenu.argtypes = [H, wintypes.UINT, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, H]
+        u.DestroyMenu.argtypes = [H]
+        self.q = q
+        self.proc = WNDPROC(self.on_message)  # kept alive: Windows calls it as long as the window exists
+        self.explorer_restarted = u.RegisterWindowMessageW("TaskbarCreated")  # before the window: it gets messages at once
+        u.RegisterClassW(ctypes.byref(WNDCLASSW(proc=self.proc, class_name="LuckyLookTray")))
+        self.hwnd = u.CreateWindowExW(0, "LuckyLookTray", "LuckyLook", 0, 0, 0, 0, 0, None, None, None, None)  # never shown
+        icon = u.LoadImageW(None, str(HERE / "assets" / "logo.ico"), 1, u.GetSystemMetrics(49), u.GetSystemMetrics(50),
+                            0x10)  # IMAGE_ICON, small-icon size, LR_LOADFROMFILE
+        self.nid = NOTIFYICONDATAW(size=ctypes.sizeof(NOTIFYICONDATAW), hwnd=self.hwnd, id=1, flags=0x7,
+                                   callback=WM_TRAY, icon=icon, tip=f"LuckyLook ({HOTKEY_NAME})")  # message+icon+tip
+        self.add()
+
+    def add(self):
+        ctypes.windll.shell32.Shell_NotifyIconW(0, ctypes.byref(self.nid))  # NIM_ADD
+
+    def remove(self):
+        ctypes.windll.shell32.Shell_NotifyIconW(2, ctypes.byref(self.nid))  # NIM_DELETE
+
+    def on_message(self, hwnd, msg, wparam, lparam):
+        if msg == WM_TRAY and lparam & 0xFFFF == WM_LBUTTONUP:
+            self.q.put(("toggle", None))
+        elif msg == WM_TRAY and lparam & 0xFFFF == WM_RBUTTONUP:
+            self.menu()
+        elif msg == self.explorer_restarted:  # Explorer crashed or restarted: the icon must be added again
+            self.add()
+        return ctypes.windll.user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def menu(self):
+        u = ctypes.windll.user32
+        m = u.CreatePopupMenu()
+        for cid, text, _ in self.MENU:
+            u.AppendMenuW(m, 0x800 if not cid else 0, cid, text)  # 0x800: separator
+        pt = wintypes.POINT()
+        u.GetCursorPos(ctypes.byref(pt))
+        u.SetForegroundWindow(self.hwnd)  # else the menu doesn't close when you click elsewhere
+        choice = u.TrackPopupMenu(m, 0x180, pt.x, pt.y, 0, self.hwnd, None)  # return the choice, don't notify
+        u.DestroyMenu(m)
+        for cid, _, kind in self.MENU:
+            if cid and cid == choice:
+                self.q.put((kind, None))
 
 
 MARKDOWN = re.compile(r"\*\*(.+?)\*\*|`([^`\n]+)`|^(#{1,4} |[-*] )", re.M)
