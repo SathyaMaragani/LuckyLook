@@ -3,6 +3,7 @@
 Run:  pythonw lucky.py      (no console window; errors go to lucky.log)
 """
 import ctypes
+import json
 import os
 import queue
 import re
@@ -21,9 +22,9 @@ if sys.stderr is None:  # pythonw has no console
 import agent  # noqa: E402
 import indexer  # noqa: E402
 
-MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, WM_HOTKEY = 0x1, 0x2, 0x4000, 0x312
-HOTKEY = (MOD_CONTROL | MOD_ALT, ord("L"))  # Ctrl+Alt+L  (Ctrl+Alt+Space is taken by another app here)
-HOTKEY_NAME = "Ctrl+Alt+L"
+MOD_NOREPEAT, WM_HOTKEY = 0x4000, 0x312
+HOTKEY = "Ctrl+Alt+L"  # change it from the tray menu (saved in local_settings.py)
+CHAT = HERE / "chat.json"  # the conversation, so it's still there after a restart
 REINDEX_HOURS = 6  # full pass: the safety net for anything the live updates miss (and app/system folders)
 LIVE_SECONDS = 5  # how soon a file you save, rename or delete shows up in answers
 KEEP_HISTORY = 12  # messages of earlier conversation sent along with each question
@@ -37,6 +38,25 @@ EDGE = 0x00423C3C  # hairline border, 0x00BBGGRR
 FONT, TEXT_FONT = "Segoe UI Variable Display", "Segoe UI Variable Text"
 # a path in backticks (may contain spaces), or a bare path (no spaces)
 PATH_RE = re.compile(r"`([A-Za-z]:\\[^`\n]*)`|\b([A-Za-z]:\\[^\s`\"'<>|*?]*)")
+
+try:
+    from local_settings import *  # noqa: F401,F403  your own settings, never uploaded
+except ImportError:
+    pass
+
+
+def parse_hotkey(text):
+    """"Ctrl+Alt+L" -> (modifier flags, virtual key) for RegisterHotKey. Keys: A-Z, 0-9, F1-F24, Space."""
+    *mods, key = text.lower().split("+")
+    if re.fullmatch(r"f([1-9]|1\d|2[0-4])", key):
+        vk = 0x6F + int(key[1:])
+    elif key == "space":
+        vk = 0x20
+    elif re.fullmatch(r"[a-z0-9]", key):
+        vk = ord(key.upper())
+    else:
+        raise ValueError(f"can't use {text!r} as a hotkey")
+    return sum({"alt": 0x1, "ctrl": 0x2, "shift": 0x4, "win": 0x8}[m] for m in mods), vk
 
 
 class Popup:
@@ -54,8 +74,7 @@ class Popup:
         r.attributes("-topmost", True)
         r.configure(bg=GLASS)
         r.attributes("-transparentcolor", GLASS)
-        w, h = 760, 460
-        self.box = ((r.winfo_screenwidth() - w) // 2, r.winfo_screenheight() // 6, w, h)
+        self.box = screen_box(760, 460)
         r.geometry("{2}x{3}+{0}+{1}".format(*self.box))
         # the frosted glass: a window just under the popup showing the blurred screen, seen through the popup's
         # GLASS-coloured parts. Clicks and scrolls on those parts land here, so pass them back.
@@ -93,14 +112,26 @@ class Popup:
         self.out.tag_config("path", foreground=LINK, underline=True)
         self.out.tag_config("bold", font=(TEXT_FONT, 11, "bold"))
         self.out.tag_config("code", font=("Consolas", 11), foreground="#ffd479")
-        self.out.tag_bind("path", "<Enter>", lambda e: self.out.config(cursor="hand2"))
-        self.out.tag_bind("path", "<Leave>", lambda e: self.out.config(cursor="arrow"))
+        self.out.tag_config("button", foreground=LINK, font=(TEXT_FONT, 9))
+        self.out.tag_config("ask", foreground="#ffd479")
+        for t in ("path", "button"):
+            self.out.tag_bind(t, "<Enter>", lambda e: self.out.config(cursor="hand2"))
+            self.out.tag_bind(t, "<Leave>", lambda e: self.out.config(cursor="arrow"))
         self.entry.bind("<Return>", self.submit)
         r.bind("<Escape>", lambda e: self.toggle())
         r.withdraw()
         self.write("Ask anything about this PC.   Enter: ask · Esc: hide · /new: fresh chat · "
                    "/widget: show or hide the top tab · /quit: exit\n"
                    "Click a path to open it, right-click to show it in Explorer.\n", "you")
+        try:  # the conversation from before the last restart
+            self.history = json.loads(CHAT.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        for q, a in zip(self.history[::2], self.history[1::2]):
+            self.write(f"\n› {q['content']}\n", "you")
+            start = self.out.index("end-1c")
+            self.write(a["content"])
+            self.finish(start)
 
         self.make_widget()
         self.tray = None  # made on the hotkey thread, whose message loop delivers its clicks
@@ -111,8 +142,14 @@ class Popup:
 
     def hotkey_loop(self):
         user32 = ctypes.windll.user32
-        if not user32.RegisterHotKey(None, 1, HOTKEY[0] | MOD_NOREPEAT, HOTKEY[1]):
-            self.q.put(("fatal", f"{HOTKEY_NAME} is already in use (LuckyLook already running, or another app). Change HOTKEY in lucky.py."))
+        mods, vk = parse_hotkey(HOTKEY)
+        for _ in range(10):  # after a restart, the old LuckyLook may need a moment to let go of it
+            if user32.RegisterHotKey(None, 1, mods | MOD_NOREPEAT, vk):
+                break
+            time.sleep(0.5)
+        else:
+            self.q.put(("fatal", f"{HOTKEY} is already in use (LuckyLook already running, or another app). "
+                                 "Set another one with HOTKEY in local_settings.py."))
             return
         threading.Thread(target=self.index_loop, daemon=True).start()
         self.tray = Tray(self.q)
@@ -127,6 +164,7 @@ class Popup:
         """A full pass now and every REINDEX_HOURS; in between, file changes reach the index within LIVE_SECONDS."""
         changes = indexer.Watcher(indexer.ROOTS)  # before the full pass, so changes made during it aren't missed
         while True:
+            meaning = True  # documents may need meaning vectors (embed_some says when they're all done)
             next_full = time.time() + REINDEX_HOURS * 3600
             try:
                 indexer.index(log=lambda m: self.q.put(("status", m)))
@@ -142,20 +180,37 @@ class Popup:
                 if paths:
                     try:
                         indexer.update(paths, log=lambda m: None)
+                        meaning = True
                     except RuntimeError:  # indexer.py running by hand: apply these when it's done
                         changes.give_back(paths)
                     except Exception as e:
                         print(f"live index error: {e}", flush=True)
+                if meaning:
+                    try:
+                        meaning = indexer.embed_some() > 0
+                    except RuntimeError:  # index busy (by hand): next time
+                        pass
+                    except Exception as e:  # e.g. the embedding model isn't downloaded: try after the next full pass
+                        print(f"meaning index error: {e}", flush=True)
+                        meaning = False
 
     def answer(self, question, start):
         try:
             reply = agent.ask(question, self.history, on_text=lambda t: self.q.put(("text", t)),
-                              on_tool=lambda n, a: self.q.put(("status", f"⚙ {n} {a}")))
+                              on_tool=lambda n, a: self.q.put(("status", f"⚙ {n} {a}")), on_confirm=self.confirm)
             self.history += [{"role": "user", "content": question}, {"role": "assistant", "content": reply}]
             del self.history[:-KEEP_HISTORY]
+            CHAT.write_text(json.dumps(self.history, ensure_ascii=False), encoding="utf-8")  # back after a restart
         except Exception as e:
             self.q.put(("text", f"\n⚠ {e}"))
         self.q.put(("done", start))
+
+    def confirm(self, text):
+        """Asked by the agent (on its thread) before it changes anything: waits for Allow or Deny in the popup."""
+        done, answer = threading.Event(), []
+        self.q.put(("confirm", (text, done, answer)))
+        done.wait()
+        return answer[0]
 
     # --- UI thread ---
 
@@ -236,11 +291,13 @@ class Popup:
                 elif kind == "status":
                     self.status.config(text=val)
                 elif kind == "done":
-                    self.linkify(val)
-                    render_markdown(self.out, val)
-                    self.write("\n")
+                    self.finish(val)
                     self.busy = False
                     self.status.config(text="")
+                elif kind == "confirm":
+                    self.ask_allow(*val)
+                elif kind in SETTINGS:
+                    SETTINGS[kind](self)
                 elif kind == "fatal":
                     from tkinter import messagebox
                     messagebox.showerror("LuckyLook", val)
@@ -255,9 +312,60 @@ class Popup:
             self.tray.remove()  # else a dead icon lingers in the tray until the mouse passes over it
         self.root.destroy()
 
+    def restart(self):
+        """To apply settings: start a fresh LuckyLook, then quit this one."""
+        exe = Path(sys.executable).with_name("pythonw.exe")  # no console window, even if this one was started with python
+        subprocess.Popen([str(exe if exe.exists() else sys.executable), str(HERE / "lucky.py")], cwd=HERE)
+        self.quit()
+
+    def edit(self, name, example):
+        """Opens one of LuckyLook's settings files in Notepad, starting it from its example if it's not there yet."""
+        path = HERE / name
+        if not path.exists():
+            path.write_text((HERE / example).read_text(encoding="utf-8"), encoding="utf-8")
+        subprocess.Popen(["notepad.exe", str(path)])
+
+    def change_hotkey(self):
+        """A small window: press the new shortcut, Save writes it to local_settings.py and restarts LuckyLook."""
+        d = tk.Toplevel(self.root, bg=PANEL, padx=24, pady=18)
+        d.title("LuckyLook hotkey")
+        d.attributes("-topmost", True)
+        d.resizable(False, False)
+        tk.Label(d, text="Press the new shortcut (with Ctrl, Alt or Shift)", font=(TEXT_FONT, 10), fg=DIM,
+                 bg=PANEL).pack()
+        combo = tk.StringVar(value=HOTKEY)
+        tk.Label(d, textvariable=combo, font=(FONT, 20), fg=FG, bg=PANEL).pack(pady=12)
+
+        def key(e):
+            mods = [m for m, bit in (("Ctrl", 0x4), ("Alt", 0x20000), ("Shift", 0x1)) if e.state & bit]
+            k = "Space" if e.keysym == "space" else e.keysym.upper() if len(e.keysym) == 1 else e.keysym
+            try:
+                parse_hotkey("+".join(mods + [k]))
+            except ValueError:
+                return  # a lone modifier, or a key that can't be a hotkey
+            if mods:
+                combo.set("+".join(mods + [k]))
+
+        def save():
+            settings = HERE / "local_settings.py"
+            lines = settings.read_text(encoding="utf-8").splitlines() if settings.exists() else []
+            lines = [ln for ln in lines if not ln.startswith("HOTKEY =")] + [f'HOTKEY = "{combo.get()}"']
+            settings.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            self.restart()
+
+        d.bind("<KeyPress>", key)
+        row = tk.Frame(d, bg=PANEL)
+        row.pack()
+        tk.Button(row, text="Save", command=save, width=10).pack(side="left", padx=4)
+        tk.Button(row, text="Cancel", command=d.destroy, width=10).pack(side="left", padx=4)
+        d.focus_force()
+
     def toggle(self):
         r = self.root
         if r.state() == "withdrawn":
+            self.box = screen_box(*self.box[2:])
+            for win in (r, self.back):
+                win.geometry("{2}x{3}+{0}+{1}".format(*self.box))
             self.frost_data = frosted(*self.box)
             self.frost = tk.PhotoImage(data=self.frost_data)
             self.backdrop.config(image=self.frost)
@@ -307,6 +415,7 @@ class Popup:
             return
         if question == "/new":
             self.history.clear()
+            CHAT.unlink(missing_ok=True)
             self.out.config(state="normal")
             self.out.delete("1.0", "end")
             self.out.config(state="disabled")
@@ -316,6 +425,44 @@ class Popup:
         self.write(f"\n› {question}\n", "you")
         start = self.out.index("end-1c")
         threading.Thread(target=self.answer, args=(question, start), daemon=True).start()
+
+    def finish(self, start):
+        """A finished answer: clickable paths, markdown as styles, and a Copy link for it."""
+        self.linkify(start)
+        render_markdown(self.out, start)
+        text = "\n".join(ln for ln in self.out.get(start, "end-1c").strip().splitlines()
+                         if not ln.startswith("⚠ LuckyLook wants to"))  # the answer, without Allow/Deny questions
+        tag = f"copy{self.links}"
+        self.links += 1
+        self.write("  ")
+        self.write("Copy", ("button", tag))
+        self.out.tag_bind(tag, "<Button-1>", lambda e: self.copy(text))
+        self.write("\n")
+
+    def copy(self, text):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.status.config(text="✓ copied")
+
+    def ask_allow(self, text, done, answer):
+        """Shows "LuckyLook wants to …  Allow  Deny" in the answer; the first click decides."""
+        def decide(ok):
+            if answer:
+                return
+            answer.append(ok)
+            self.write(" → allowed\n" if ok else " → not allowed\n", "you")
+            done.set()
+        n = self.links
+        self.links += 1
+        self.write(f"\n⚠ LuckyLook wants to {text}.  ", "ask")
+        self.write("Allow", ("button", f"allow{n}"))
+        self.write("   ")
+        self.write("Deny", ("button", f"deny{n}"))
+        self.out.tag_bind(f"allow{n}", "<Button-1>", lambda e: decide(True))
+        self.out.tag_bind(f"deny{n}", "<Button-1>", lambda e: decide(False))
+        if self.root.state() == "withdrawn":
+            self.toggle()  # it can't be answered unseen
+        self.status.config(text="waiting for you to allow or deny…")
 
     def linkify(self, start):
         """Make paths that exist on disk in the answer clickable."""
@@ -403,6 +550,32 @@ def frosted(x, y, w, h):
     return b"P6 %d %d 255\n" % (w, h) + rgb
 
 
+SETTINGS = {  # tray menu choices that the UI thread carries out
+    "aboutme": lambda p: p.edit("me.md", "me.example.md"),
+    "private": lambda p: p.edit("local_settings.py", "local_settings.example.py"),
+    "hotkey": Popup.change_hotkey,
+    "restart": Popup.restart,
+}
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [("size", wintypes.DWORD), ("monitor", wintypes.RECT), ("work", wintypes.RECT), ("flags", wintypes.DWORD)]
+
+
+def screen_box(w, h):
+    """(x, y, w, h) for the popup: centred, a sixth of the way down, on the screen the mouse is on."""
+    u = ctypes.windll.user32
+    u.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+    u.MonitorFromPoint.restype = ctypes.c_void_p
+    u.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(MONITORINFO)]
+    pt = wintypes.POINT()
+    u.GetCursorPos(ctypes.byref(pt))
+    info = MONITORINFO(ctypes.sizeof(MONITORINFO))
+    u.GetMonitorInfoW(u.MonitorFromPoint(pt, 2), ctypes.byref(info))  # 2: the nearest screen
+    a = info.work  # minus the taskbar
+    return a.left + (a.right - a.left - w) // 2, a.top + (a.bottom - a.top) // 6, w, h
+
+
 LRESULT = ctypes.c_ssize_t
 WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 WM_TRAY, WM_LBUTTONUP, WM_RBUTTONUP = 0x8001, 0x0202, 0x0205
@@ -425,8 +598,9 @@ class NOTIFYICONDATAW(ctypes.Structure):
 class Tray:
     """LuckyLook's icon in the system tray. Click: open or close the popup. Right-click: a menu.
     Runs on the hotkey thread (its message loop delivers the clicks) and talks to the UI only through q."""
-    MENU = [(1, f"Open LuckyLook\t{HOTKEY_NAME}", "toggle"), (2, "Show or hide the top tab", "widget"),
-            (0, None, None), (3, "Quit LuckyLook", "quit")]
+    MENU = [(1, f"Open LuckyLook\t{HOTKEY}", "toggle"), (2, "Show or hide the top tab", "widget"), (0, None, None),
+            (4, "About me…", "aboutme"), (5, "Private folders and windows…", "private"), (6, "Change hotkey…", "hotkey"),
+            (7, "Restart LuckyLook (applies settings)", "restart"), (0, None, None), (3, "Quit LuckyLook", "quit")]
 
     def __init__(self, q):
         u, H = ctypes.windll.user32, ctypes.c_void_p
@@ -448,7 +622,7 @@ class Tray:
         icon = u.LoadImageW(None, str(HERE / "assets" / "logo.ico"), 1, u.GetSystemMetrics(49), u.GetSystemMetrics(50),
                             0x10)  # IMAGE_ICON, small-icon size, LR_LOADFROMFILE
         self.nid = NOTIFYICONDATAW(size=ctypes.sizeof(NOTIFYICONDATAW), hwnd=self.hwnd, id=1, flags=0x7,
-                                   callback=WM_TRAY, icon=icon, tip=f"LuckyLook ({HOTKEY_NAME})")  # message+icon+tip
+                                   callback=WM_TRAY, icon=icon, tip=f"LuckyLook ({HOTKEY})")  # message+icon+tip
         self.add()
 
     def add(self):

@@ -11,3 +11,4 @@ Interlocking*.png
 # Python
 .venv/
 __pycache__/
+chat.json

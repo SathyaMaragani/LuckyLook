@@ -8,16 +8,17 @@
 
 <img src="assets/screenshot-tab.png" width="320" alt="The LuckyLook tab at the top of the screen, pulled down on hover">
 
-- **Files and documents:** "where is my resume?", "what did I quote the client for the logo?", "what's eating my disk?". Searches inside documents, PDFs, Word files, notes and code.
+- **Files and documents:** "where is my resume?", "what did I quote the client for the logo?", "what's eating my disk?". Searches inside documents, PDFs, Word files, notes and code, by exact words *and by meaning*: "the bill from the plumber" finds the invoice even if it never says "bill".
 - **Your PC:** free space, installed apps, what's using memory, battery, specs.
 - **What you were doing:** recently opened files, and websites you visited (Edge and Chrome history).
 - **What's on your screen:** "what does this error mean?" It looks at your screen. Also images and photos ("what does this receipt say?").
 - **What you copied:** text, files, or a Win+Shift+S snip.
-- **Remembers you:** "remember that I prefer short answers" goes into `memory.md`. Tell it about yourself in `me.md`.
+- **Does things, if you allow it:** "open my resume", "start Blender", "move the invoices to my Taxes folder", "delete the old installer". Every action shows **Allow / Deny** first, and deleting only ever goes to the Recycle Bin.
+- **Remembers you:** "remember that I prefer short answers" goes into `memory.md`. Tell it about yourself in `me.md` (tray menu › About me…). Your conversation is still there after a restart; `/new` starts fresh.
 
 Everything runs **on your computer** with [Ollama](https://ollama.com). No cloud, no account, nothing leaves the machine.
 
-The popup is a frosted-glass bar in the style of macOS Spotlight. File paths in answers are clickable: click to open, right-click to show in Explorer.
+The popup is a frosted-glass bar in the style of macOS Spotlight, and it opens on the screen your mouse is on. File paths in answers are clickable: click to open, right-click to show in Explorer. Every answer has a **Copy** link.
 
 ## Requirements
 
@@ -30,7 +31,7 @@ The popup is a frosted-glass bar in the style of macOS Spotlight. File paths in 
 1. On this page, click **Code › Download ZIP**, then unzip it somewhere permanent (for example `Documents\LuckyLook`).
 2. Double-click **`install.bat`**.
 
-It checks for Python and Ollama and installs them with winget if they're missing. It then downloads the AI model (several GB, one time only), sets everything up, runs a self-check, adds LuckyLook to Windows startup and starts it. Don't want it to start with Windows? Run `install.bat -NoStartup`.
+It checks for Python and Ollama and installs them with winget if they're missing. It then downloads the AI models (several GB, one time only), sets everything up, runs a self-check, adds LuckyLook to Windows startup and starts it. Don't want it to start with Windows? Run `install.bat -NoStartup`.
 
 ## Install (by hand)
 
@@ -40,13 +41,14 @@ In a terminal:
 git clone https://github.com/SathyaMaragani/LuckyLook
 cd LuckyLook
 ollama pull qwen3.5:9b
+ollama pull nomic-embed-text
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\python test_lucky.py
 .venv\Scripts\pythonw lucky.py
 ```
 
-LuckyLook now runs in the background: press **Ctrl+Alt+L**. The first time, it indexes every fixed drive, and that can take an hour or more on a big disk. The status line at the bottom of the popup shows progress, and you can ask questions meanwhile. After that it stays up to date live: a file you save, rename, move or delete shows up in answers within about 5 seconds. App and system folders (AppData, Program Files) change constantly, so they're refreshed by a full pass every 6 hours instead, and that pass only re-reads changed files.
+LuckyLook now runs in the background: press **Ctrl+Alt+L**. The first time, it indexes every fixed drive, and that can take an hour or more on a big disk. The status line at the bottom of the popup shows progress, and you can ask questions meanwhile. After that it stays up to date live: a file you save, rename, move or delete shows up in answers within about 5 seconds. App and system folders (AppData, Program Files) change constantly, so they're refreshed by a full pass every 6 hours instead, and that pass only re-reads changed files. Search by meaning builds up in the background too, at about 20 documents a second with a graphics card.
 
 Optional: copy `me.example.md` to `me.md` and tell it about yourself (your name, your work, where your projects live).
 
@@ -61,7 +63,7 @@ $s = (New-Object -ComObject WScript.Shell).CreateShortcut("$([Environment]::GetF
 | | |
 |---|---|
 | **Ctrl+Alt+L**, click the top tab, or click the tray icon | open or close the popup |
-| right-click the tray icon | menu: open, show or hide the top tab, quit |
+| right-click the tray icon | menu: open, show or hide the top tab, **About me…**, **Private folders and windows…**, **Change hotkey…**, restart, quit |
 | **Enter** / **Esc** | ask / hide |
 | `/new` | start a fresh conversation |
 | `/widget` | hide or show the top tab |
@@ -74,11 +76,12 @@ The top tab gets out of the way by itself during full-screen videos, games and s
 - Nothing is sent anywhere. The model, the index (`index.db`) and your notes all stay in this folder.
 - It reads file *names* everywhere on your fixed drives, and the *text* of documents and code outside system folders. Secrets files (`.env`, SSH keys, `.pem`/`.key`/`.pfx`, KeePass databases) are never read. OneDrive files that live only in the cloud are not downloaded.
 - It only looks at your screen, clipboard or browser history when you ask a question that needs them. The popup itself never appears in screenshots or screen shares.
-- **Keep things out:** copy `local_settings.example.py` to `local_settings.py`. List folders LuckyLook must never touch (for example a browser profile), and window titles to black out whenever it looks at your screen. To keep browsing history out entirely, add `HISTORY = []`.
+- It never changes anything without asking: opening, starting, moving and deleting each wait for your **Allow**. Deleting goes to the Recycle Bin, and moving never overwrites.
+- **Keep things out:** tray menu › **Private folders and windows…** (or copy `local_settings.example.py` to `local_settings.py`). List folders LuckyLook must never touch (for example a browser profile), and window titles to black out whenever it looks at your screen. To keep browsing history out entirely, add `HISTORY = []`. Then tray menu › Restart LuckyLook.
 
 ## Settings
 
-Put overrides in `local_settings.py`: `MODEL`, `ROOTS` (which drives to index), `PRIVATE`, `PRIVATE_WINDOWS`, `HISTORY`. Other constants are at the top of each file: `lucky.py` has the hotkey, the look and the re-index interval.
+Put overrides in `local_settings.py`: `HOTKEY`, `MODEL`, `ROOTS` (which drives to index), `PRIVATE`, `PRIVATE_WINDOWS`, `HISTORY`. Restart LuckyLook from the tray menu afterwards. Other constants are at the top of each file: `lucky.py` has the look and the re-index timings.
 
 **Other models:** any Ollama model with tool calling works. For screen and image questions, it also needs vision. `bench.py` compares models on questions about your PC: `.venv\Scripts\python bench.py qwen3.5:9b qwen3:8b --think`.
 

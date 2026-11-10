@@ -56,6 +56,21 @@ with tempfile.TemporaryDirectory() as tmp:
             pass
         msvcrt.locking(held.fileno(), msvcrt.LK_UNLCK, 1)
 
+    # search by meaning: a fake embedding (one dimension per topic word) instead of the real model
+    topics = ["cat", "money", "trip"]
+    indexer.embed = lambda texts: [[float(w in t.lower()) / max(1, sum(x in t.lower() for x in topics)) ** 0.5
+                                    for w in topics] for t in texts]
+    (docs / "kittens.md").write_text("all about the cat", encoding="utf-8")
+    (docs / "invoice.txt").write_text("money owed: 300", encoding="utf-8")
+    indexer.index([str(tmp)], log=quiet)
+    while indexer.embed_some(1):  # one at a time, to check it carries on until all are done
+        pass
+    assert agent.search_meaning("money", limit=1).startswith(str(docs / "invoice.txt"))
+    assert agent.search_meaning("cat", limit=1).startswith(str(docs / "kittens.md"))
+    (docs / "invoice.txt").unlink()
+    indexer.update({str(docs / "invoice.txt")}, log=quiet)
+    assert "invoice" not in agent.search_meaning("money")  # its vector went with it
+
     # live updates: new, edited, renamed folder, deleted
     (tmp / "live").mkdir()
     (tmp / "live" / "plan.md").write_text("ostrich budget 77", encoding="utf-8")
@@ -107,6 +122,21 @@ with tempfile.TemporaryDirectory() as tmp:
     assert agent.run_tool("list_dir", {"path": str(priv).upper() + "\\..\\Profile 6"}).startswith("refused")
     agent.HISTORY = [str(priv / "History")]
     assert agent.browser_history() == "nothing found"
+
+    # actions ask first, never overwrite, and the private folder stays off limits
+    a = tmp / "a.txt"
+    a.write_text("x")
+    agent.CONFIRM = lambda text: False
+    assert agent.move_item(str(a), str(docs)) == agent.NO and a.exists()
+    asked = []
+    agent.CONFIRM = lambda text: asked.append(text) or True
+    assert agent.move_item(str(a), str(docs)).startswith("moved") and (docs / "a.txt").exists() and not a.exists()
+    assert asked == [f"move {a} to {docs / 'a.txt'}"]
+    (tmp / "b.txt").write_text("y")
+    assert "already exists" in agent.move_item(str(tmp / "b.txt"), str(docs / "a.txt")) and len(asked) == 1
+    assert agent.run_tool("recycle_item", {"path": str(priv / "notes.md")}).startswith("refused") and len(asked) == 1
+    agent.CONFIRM = lambda text: False
+    assert agent.recycle_item(str(docs / "a.txt")) == agent.NO and (docs / "a.txt").exists()
 
 json.dumps(agent.SCHEMAS)
 assert list(lucky.find_paths("see `C:\\My Docs\\cv.pdf` and D:\\x\\y.txt.")) == [

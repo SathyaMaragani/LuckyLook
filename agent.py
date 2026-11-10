@@ -1,4 +1,5 @@
-"""LuckyLook brain: a local Ollama model plus read-only tools over this PC.
+"""LuckyLook brain: a local Ollama model plus tools over this PC. They only look, except remember (memory.md)
+and the actions (open, move, recycle), which ask the user first.
 
 Run:  python agent.py "where is my resume?"
 """
@@ -81,6 +82,32 @@ def search_content(query: str, limit: int = 10):
             "join files f on f.id = content.rowid where content match ? "
             "order by bm25(content, 5.0, 1.0) limit ?", (match, int(limit))).fetchall()
     return "\n".join(f"{p} (modified {when(m)})\n  {s}" for p, m, s in rows) or "no matches"
+
+
+MEANING = {"count": -1}  # all document vectors as one matrix, reloaded when the index has more or fewer
+
+
+def search_meaning(query: str, limit: int = 10):
+    """Find documents (PDF, Word, notes, text) by what they're about, when the exact words aren't known:
+    "bill from the plumber" finds invoices, "trip ideas" finds travel notes. Use with search_content."""
+    import numpy as np  # only needed here
+    with closing(indexer.connect()) as con:
+        count = con.execute("select count(*) from vectors").fetchone()[0]
+        if not count:
+            return "no documents understood by meaning yet (it builds in the background); use search_content"
+        if count != MEANING["count"]:
+            rows = con.execute("select id, vec from vectors").fetchall()
+            MEANING.update(count=count, ids=[i for i, _ in rows],
+                           matrix=np.frombuffer(b"".join(v for _, v in rows), dtype=np.float32).reshape(len(rows), -1))
+        q = np.array(indexer.embed([f"search_query: {query}"])[0], dtype=np.float32)  # nomic's prefix for queries
+        best = np.argsort(MEANING["matrix"] @ q)[::-1][:int(limit)]
+        out = []
+        for i in best:
+            row = con.execute("select f.path, f.mtime, substr(c.body, 1, 160) from files f join content c "
+                              "on c.rowid = f.id where f.id = ?", (MEANING["ids"][i],)).fetchone()
+            if row:
+                out.append(f"{row[0]} (modified {when(row[1])})\n  {' '.join(row[2].split())}…")
+    return "\n".join(out) or "no matches"
 
 
 def find_files(name: str = "", ext: str = "", under: str = "", min_size_mb: float = 0,
@@ -314,6 +341,72 @@ def installed_apps():
     return sorted(names, key=str.lower)
 
 
+# ---------- actions: each one asks the user first ----------
+
+def ask_in_terminal(text):
+    return input(f"\nLuckyLook wants to {text}. Allow? [y/N] ").strip().lower() == "y"
+
+
+CONFIRM = ask_in_terminal  # ask() swaps in the popup's Allow/Deny
+NO = "The user didn't allow it, so nothing was done. Don't try another way."
+RUNS = {".exe", ".bat", ".cmd", ".ps1", ".py", ".pyw", ".vbs", ".js", ".msi", ".lnk", ".reg", ".com", ".scr"}
+
+
+def open_item(path: str):
+    """Open a file or folder with its usual app (a document, a picture, a folder in Explorer). Asks the user first."""
+    if not os.path.exists(path):
+        return "doesn't exist"
+    if not CONFIRM(f"{'run' if Path(path).suffix.lower() in RUNS else 'open'} {path}"):
+        return NO
+    os.startfile(path)
+    return "opened"
+
+
+def open_app(name: str):
+    """Start an installed app by its name in the Start menu (e.g. "Notepad", "Blender 5.2"). Asks the user first.
+    If several apps match, it lists them instead: call again with the exact name."""
+    apps = json.loads(powershell("Get-StartApps | ConvertTo-Json -Compress") or "[]")  # Store apps too
+    apps = [apps] if isinstance(apps, dict) else apps
+    words = name.lower().split()
+    hits = [a for a in apps if a["Name"].lower() == name.lower()] or \
+        [a for a in apps if all(w in a["Name"].lower() for w in words)]
+    if not hits:
+        return f"no app called {name!r} in the Start menu"
+    if len(hits) > 1:
+        return "several apps match, which one? " + ", ".join(a["Name"] for a in hits[:15])
+    if not CONFIRM(f"start {hits[0]['Name']}"):
+        return NO
+    subprocess.Popen(["explorer.exe", "shell:AppsFolder\\" + hits[0]["AppID"]])
+    return f"started {hits[0]['Name']}"
+
+
+def move_item(path: str, to: str):
+    """Move or rename a file or folder. to: the new full path, or an existing folder to move it into.
+    Never overwrites anything. Asks the user first."""
+    if not os.path.exists(path):
+        return "doesn't exist"
+    dest = os.path.join(to, os.path.basename(path)) if os.path.isdir(to) else to
+    if os.path.exists(dest):
+        return f"{dest} already exists, so nothing was moved"
+    if not CONFIRM(f"move {path} to {dest}"):
+        return NO
+    shutil.move(path, dest)
+    return f"moved to {dest}"
+
+
+def recycle_item(path: str):
+    """Delete a file or folder by sending it to the Recycle Bin, where it can be restored. Asks the user first."""
+    if not os.path.exists(path):
+        return "doesn't exist"
+    if not CONFIRM(f"send {path} to the Recycle Bin"):
+        return NO
+    kind = "Directory" if os.path.isdir(path) else "File"
+    quoted = path.replace("'", "''")
+    powershell(f"Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::Delete{kind}"
+               f"('{quoted}', 'OnlyErrorDialogs', 'SendToRecycleBin')")
+    return "couldn't delete it" if os.path.exists(path) else "sent to the Recycle Bin"
+
+
 def remember(fact: str):
     """Save a lasting fact or preference about the user. Only use when the user asks you to remember something."""
     with open(HERE / "memory.md", "a", encoding="utf-8") as f:
@@ -321,8 +414,9 @@ def remember(fact: str):
     return "saved"
 
 
-FUNCS = {f.__name__: f for f in [search_content, find_files, find_folders, read_file, list_dir, system_info,
-                                  recent_files, look_at_image, look_at_screen, clipboard, browser_history, remember]}
+FUNCS = {f.__name__: f for f in [search_content, search_meaning, find_files, find_folders, read_file, list_dir, system_info,
+                                  recent_files, look_at_image, look_at_screen, clipboard, browser_history, remember,
+                                  open_item, open_app, move_item, recycle_item]}
 TYPES = {str: "string", int: "integer", float: "number"}
 
 
@@ -362,11 +456,14 @@ def system_prompt():
     yesterday = now - datetime.timedelta(days=1)  # spelled out: the 9B model got "yesterday" wrong doing the maths itself
     return f"""You are LuckyLook, a private assistant running entirely on the user's Windows PC.
 Use your tools to look things up on this computer instead of guessing. If a search finds nothing, try other keywords,
-or find_files by name, before giving up. Prefer find_files for "where is", search_content for "what does it say".
+or find_files by name, before giving up. Prefer find_files for "where is", search_content for "what does it say",
+search_meaning when the user describes a document instead of quoting it (try it when search_content finds nothing).
 When the user names a folder ("my projects folder"), find_folders it, then list_dir the best match.
 Snippets are partial: when a found file looks relevant, read_file it before answering.
 Write every file or folder path in full inside backticks, like `D:\\Docs\\cv.pdf`, so the user can click it.
 Never write paths as markdown links or file:/// URLs.
+You can also open files and apps, move or rename, and send things to the Recycle Bin, but only when the user asks
+for that. Each action asks the user to allow it; if they don't, leave it.
 Copy file and folder names exactly as the tools return them. Don't guess what names mean or invent details.
 Be concise. Now: {now:%A %Y-%m-%d %H:%M}. Yesterday was {yesterday:%A %Y-%m-%d}.
 
@@ -377,8 +474,12 @@ Be concise. Now: {now:%A %Y-%m-%d %H:%M}. Yesterday was {yesterday:%A %Y-%m-%d}.
 {read("memory.md") or "(none yet)"}"""
 
 
-def ask(question, history=(), on_text=lambda s: print(s, end="", flush=True), on_tool=lambda name, args: None):
-    """Answers one question, calling tools as needed. history: earlier user/assistant messages. Returns the answer."""
+def ask(question, history=(), on_text=lambda s: print(s, end="", flush=True), on_tool=lambda name, args: None,
+        on_confirm=ask_in_terminal):
+    """Answers one question, calling tools as needed. history: earlier user/assistant messages. Returns the answer.
+    on_confirm(text) -> bool is asked before any action (open, move, delete)."""
+    global CONFIRM
+    CONFIRM = on_confirm
     messages = [{"role": "system", "content": system_prompt()}, *history, {"role": "user", "content": question}]
     content, retried = "", False
     for _ in range(MAX_STEPS):

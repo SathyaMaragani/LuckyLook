@@ -61,15 +61,17 @@ if (-not (Test-Path .venv\Scripts\python.exe)) {
 if ($LASTEXITCODE) { Fail "Couldn't install the Python packages (needs internet)." }
 Write-Host "ready"
 
-Step "The AI model"
-$model = .venv\Scripts\python -c "import agent; print(agent.MODEL)"
+Step "The AI models"
 $have = (OllamaUp).models.name
-if ($have -contains $model -or $have -contains "$model`:latest") {
-    Write-Host "$model is already downloaded"
-} else {
-    Write-Host "downloading $model (several GB, one time only)..."
-    & $ollama pull $model
-    if ($LASTEXITCODE) { Fail "Couldn't download $model." }
+# the chat model, and the small one that lets it search documents by meaning
+foreach ($model in (.venv\Scripts\python -c "import agent, indexer; print(agent.MODEL); print(indexer.EMBED_MODEL)")) {
+    if ($have -contains $model -or $have -contains "$model`:latest") {
+        Write-Host "$model is already downloaded"
+    } else {
+        Write-Host "downloading $model (one time only; the chat model is several GB)..."
+        & $ollama pull $model
+        if ($LASTEXITCODE) { Fail "Couldn't download $model." }
+    }
 }
 
 Step "Self-check"

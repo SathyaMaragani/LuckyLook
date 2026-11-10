@@ -4,9 +4,11 @@ Full passes (index) plus live updates in between (Watcher + update), which the p
 Run:  python indexer.py                 (all drives in ROOTS)
       python indexer.py D:\\Projects     (just these folders)
 """
+import array
 import contextlib
 import ctypes
 import html
+import json
 import logging
 import msvcrt
 import os
@@ -17,6 +19,7 @@ import struct
 import sys
 import threading
 import time
+import urllib.request
 import zipfile
 from ctypes import wintypes
 from pathlib import Path
@@ -54,6 +57,10 @@ DOC_EXT = {".docx"} | ({".pdf"} if PdfReader else set())
 MAX_TEXT_BYTES = 2_000_000
 MAX_DOC_BYTES = 30_000_000
 MAX_CHARS = 200_000
+# Search by meaning: documents (not code or data) get an embedding from this local Ollama model.
+EMBED_MODEL = "nomic-embed-text"
+MEANING_EXT = {".pdf", ".docx", ".md", ".markdown", ".txt", ".rst"}
+OLLAMA_EMBED = "http://localhost:11434/api/embed"
 SECRET = re.compile(r"^(\.env.*|id_rsa.*|id_ed25519.*|.*\.(pem|key|pfx|p12|kdbx|ppk))$", re.I)
 
 LINK_TAGS = {0xA0000003, 0xA000000C}  # junction, symlink: skip to avoid loops
@@ -70,6 +77,7 @@ def connect():
         create index if not exists files_mtime on files(mtime);
         create table if not exists folders(path text primary key, name text, seen int);
         create virtual table if not exists content using fts5(name, body, tokenize='porter unicode61 remove_diacritics 2');
+        create table if not exists vectors(id integer primary key, vec blob);  -- meaning of a document (embed_some)
     """)
     return con
 
@@ -176,6 +184,7 @@ def add_file(con, path, name, size, mtime, text_ok, run):
         fid = row[0]
         con.execute("update files set name=?, ext=?, size=?, mtime=?, seen=? where id=?", (name, ext, size, mtime, run, fid))
         con.execute("delete from content where rowid=?", (fid,))
+        con.execute("delete from vectors where id=?", (fid,))
     else:
         fid = con.execute("insert into files(path, name, ext, size, mtime, seen) values (?,?,?,?,?,?)",
                           (path, name, ext, size, mtime, run)).lastrowid
@@ -210,6 +219,7 @@ def _index(roots, log):
         where = "seen<>? and path>=? and path<?"
         args = (run, prefix, prefix + "\uffff")
         con.execute(f"delete from content where rowid in (select id from files where {where})", args)
+        con.execute(f"delete from vectors where id in (select id from files where {where})", args)
         con.execute(f"delete from files where {where}", args)
         con.execute(f"delete from folders where {where}", args)
     con.commit()
@@ -243,6 +253,7 @@ def update(paths, log=print):
                 args = (path, path + "\\", path + "]")  # "]" sorts right after "\": the range is everything under path
                 where = "path = ? or (path >= ? and path < ?)"
                 con.execute(f"delete from content where rowid in (select id from files where {where})", args)
+                con.execute(f"delete from vectors where id in (select id from files where {where})", args)
                 con.execute(f"delete from files where {where}", args)
                 con.execute(f"delete from folders where {where}", args)
                 continue
@@ -261,6 +272,32 @@ def update(paths, log=print):
         con.commit()
         con.close()
     log(f"index updated · {len(paths):,} changes")
+
+
+def embed(texts):
+    """Embeddings (unit-length lists of floats) for these texts, from EMBED_MODEL."""
+    body = json.dumps({"model": EMBED_MODEL, "input": texts, "truncate": True}).encode()
+    with urllib.request.urlopen(urllib.request.Request(OLLAMA_EMBED, body, {"Content-Type": "application/json"}),
+                                timeout=600) as r:
+        return json.load(r)["embeddings"]
+
+
+def embed_some(n=256):
+    """Gives up to n documents without one a meaning vector (name + start of the text). Returns how many it did:
+    0 means all done. ~20 documents a second on an 8 GB graphics card."""
+    with exclusive():
+        con = connect()
+        exts = ",".join("?" * len(MEANING_EXT))
+        rows = con.execute(f"select f.id, f.name, substr(c.body, 1, 1500) from files f join content c on c.rowid = f.id "
+                           f"left join vectors v on v.id = f.id where v.id is null and f.ext in ({exts}) limit ?",
+                           (*MEANING_EXT, n)).fetchall()
+        if rows:
+            vecs = embed([f"search_document: {name}\n{text}" for _, name, text in rows])  # nomic's prefix for documents
+            con.executemany("insert or replace into vectors(id, vec) values (?, ?)",
+                            [(fid, array.array("f", v).tobytes()) for (fid, _, _), v in zip(rows, vecs)])
+            con.commit()
+        con.close()
+    return len(rows)
 
 
 class Watcher:
