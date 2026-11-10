@@ -62,6 +62,8 @@ if ($LASTEXITCODE) { Fail "Couldn't install the Python packages (needs internet)
 Write-Host "ready"
 
 Step "The AI models"
+# models.json picks the chat model that fits this PC (MODEL in local_settings.py overrides it)
+.venv\Scripts\python -c "import agent; v, r = agent.specs(); print(f'This PC: {v:.0f} GB graphics card memory, {r:.0f} GB RAM, so LuckyLook uses {agent.MODEL}')"
 $have = (OllamaUp).models.name
 # the chat model, and the small one that lets it search documents by meaning
 foreach ($model in (.venv\Scripts\python -c "import agent, indexer; print(agent.MODEL); print(indexer.EMBED_MODEL)")) {

@@ -160,6 +160,11 @@ with tempfile.TemporaryDirectory() as tmp:
     assert agent.run_tool("create_folder", {"path": str(priv / "new")}).startswith("refused")  # private stays private
 
 json.dumps(agent.SCHEMAS)
+# the model fits the PC (models.json): (graphics card GB, RAM GB)
+assert [agent.pick_model(pc) for pc in [(25.8, 64), (8.5, 32), (6.4, 16), (4.2, 16), (0.5, 32), (2, 12), (0, 4)]] == [
+    "qwen3.5:27b", "qwen3.5:9b", "qwen3.5:4b", "qwen3.5:2b", "qwen3.5:4b", "qwen3.5:2b", "qwen3.5:0.8b"]
+vram, ram = agent.specs()
+assert ram > 1 and vram >= 0
 assert list(lucky.find_paths("see `C:\\My Docs\\cv.pdf` and D:\\x\\y.txt.")) == [
     ("C:\\My Docs\\cv.pdf", 5), ("D:\\x\\y.txt", 28)]
 with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as watched:  # not in AppData: live() skips that

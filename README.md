@@ -24,7 +24,7 @@ The popup is a frosted-glass bar in the style of macOS Spotlight, and it opens o
 
 - Windows 11 (Windows 10 works, just without rounded corners)
 - [Python](https://www.python.org/downloads/) 3.10 or newer, and [Ollama](https://ollama.com/download). The installer sets these up for you if they're missing.
-- A graphics card with 8 GB of memory is ideal. It also runs on the CPU, just slower.
+- Any PC with 4 GB of RAM or more. LuckyLook picks the AI model that fits your hardware (see `models.json`): a graphics card with 8 GB gets the recommended `qwen3.5:9b`, a bigger card gets a bigger model, and smaller cards or PCs without one get a smaller model that runs on the CPU.
 
 ## Install (easy way)
 
@@ -47,6 +47,8 @@ python -m venv .venv
 .venv\Scripts\python test_lucky.py
 .venv\Scripts\pythonw lucky.py
 ```
+
+(`qwen3.5:9b` is for an 8 GB graphics card. With a different PC, pull the model `models.json` lists for it instead; `install.bat` does this for you.)
 
 LuckyLook now runs in the background: press **Ctrl+Alt+L**. The first time, it indexes every fixed drive, and that can take an hour or more on a big disk. The status line at the bottom of the popup shows progress, and you can ask questions meanwhile. After that it stays up to date live: a file you save, rename, move or delete shows up in answers within about 5 seconds. App and system folders (AppData, Program Files) change constantly, so they're refreshed by a full pass every 6 hours instead, and that pass only re-reads changed files. Search by meaning builds up in the background too, at about 20 documents a second with a graphics card.
 
@@ -83,7 +85,7 @@ The top tab gets out of the way by itself during full-screen videos, games and s
 
 Put overrides in `local_settings.py`: `HOTKEY`, `MODEL`, `ROOTS` (which drives to index), `PRIVATE`, `PRIVATE_WINDOWS`, `HISTORY`. Restart LuckyLook from the tray menu afterwards. Other constants are at the top of each file: `lucky.py` has the look and the re-index timings.
 
-**Other models:** any Ollama model with tool calling works. For screen and image questions, it also needs vision. `bench.py` compares models on questions about your PC: `.venv\Scripts\python bench.py qwen3.5:9b qwen3:8b --think`.
+**Which model:** `models.json` maps hardware to a model: by graphics card memory, or by RAM when there's no usable card. Edit it to change the choices for everyone; set `MODEL` in `local_settings.py` to force one on your own PC. To see what your PC gets: `.venv\Scripts\python -c "import agent; print(agent.specs(), agent.MODEL)"`. Any Ollama model with tool calling works. For screen and image questions, it also needs vision. `bench.py` compares models on questions about your PC: `.venv\Scripts\python bench.py qwen3.5:9b qwen3:8b --think`.
 
 ## Files
 
@@ -91,6 +93,7 @@ Put overrides in `local_settings.py`: `HOTKEY`, `MODEL`, `ROOTS` (which drives t
 - `agent.py`: the model and its tools. Also usable from a terminal: `.venv\Scripts\python agent.py "where is my resume?"`
 - `indexer.py`: builds `index.db`. Run it by hand for a folder: `.venv\Scripts\python indexer.py D:\Projects`
 - `install.bat` / `install.ps1`: the one-click installer. Safe to run again: it skips what's already done.
+- `models.json`: which AI model fits which hardware.
 - `test_lucky.py`: self-check. `bench.py`: model comparison. `assets/`: the logo and screenshots.
 
 ## License

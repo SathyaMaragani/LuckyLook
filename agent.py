@@ -5,6 +5,7 @@ Run:  python agent.py "where is my resume?"
 """
 import base64
 import csv
+import ctypes
 import datetime
 import glob
 import inspect
@@ -27,16 +28,50 @@ from pathlib import Path
 
 import indexer
 
-# Picked with bench.py (Nov 2026, RTX 5060 8 GB): qwen3.5:9b fits fully on the GPU. Thinking on = 6/6 correct, ~12s.
-# Thinking off = ~7s but sloppier reasoning. qwen3:14b = 6/6 but ~17s (half runs on CPU).
-MODEL = "qwen3.5:9b"
+HERE = Path(__file__).parent
+
+
+class MEMORYSTATUSEX(ctypes.Structure):
+    _fields_ = [("size", ctypes.c_ulong), ("load", ctypes.c_ulong), ("total", ctypes.c_ulonglong),
+                ("rest", ctypes.c_ulonglong * 6)]
+
+
+def specs():
+    """(graphics card memory, PC memory) in GB. The card's comes from its driver's registry entry; the biggest card
+    counts (built-in graphics report only a little, e.g. 0.5 GB, so they don't win over a real card)."""
+    vram = 0
+    cards = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, cards) as key:
+        for i in range(winreg.QueryInfoKey(key)[0]):
+            try:
+                with winreg.OpenKey(key, winreg.EnumKey(key, i)) as card:
+                    size = winreg.QueryValueEx(card, "HardwareInformation.qwMemorySize")[0]
+                    vram = max(vram, size if isinstance(size, int) else int.from_bytes(size, "little"))
+            except OSError:  # not a card, or an old driver without the 64-bit size
+                pass
+    mem = MEMORYSTATUSEX(ctypes.sizeof(MEMORYSTATUSEX))
+    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem))
+    return vram / 1e9, mem.total / 1e9
+
+
+def pick_model(pc=None):
+    """The chat model for this PC (or for pc = (graphics GB, RAM GB)), from models.json."""
+    vram, ram = pc or specs()
+    table = json.loads((HERE / "models.json").read_text(encoding="utf-8"))
+    for row in table["graphics_card"]:
+        if vram >= row["memory_gb"]:
+            return row["model"]
+    return next(row["model"] for row in table["no_graphics_card"] if ram >= row["memory_gb"])
+
+
+# Chosen by this PC's specs (models.json). On an RTX 5060 8 GB, bench.py had qwen3.5:9b at 6/6, ~12 s with thinking.
+MODEL = pick_model()
 OLLAMA = "http://localhost:11434/api/chat"
 THINK = True  # let the model reason before answering: more accurate, slower
 NUM_CTX = 16384
 MAX_STEPS = 8
 MAX_TOOL_CHARS = 8000
 MAX_READ = 12000
-HERE = Path(__file__).parent
 NO_WINDOW = 0x08000000  # don't flash a console when running under pythonw
 IMAGE_EXT = {".png", ".jpg", ".jpeg"}  # webp reached the model blank in testing
 # browser histories browser_history can search (one per profile). Empty this list to keep browsing out of it.
