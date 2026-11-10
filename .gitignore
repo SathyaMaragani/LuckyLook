@@ -1,0 +1,13 @@
+# Your own data: never uploaded
+index.db*
+index.lock
+*.log
+me.md
+memory.md
+local_settings.py
+*.lnk
+Interlocking*.png
+
+# Python
+.venv/
+__pycache__/
