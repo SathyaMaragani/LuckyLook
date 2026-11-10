@@ -1,5 +1,5 @@
 """LuckyLook brain: a local Ollama model plus tools over this PC. They only look, except remember (memory.md)
-and the actions (open, move, recycle), which ask the user first.
+and the actions (open, create, move, recycle), which ask the user first.
 
 Run:  python agent.py "where is my resume?"
 """
@@ -348,7 +348,7 @@ def ask_in_terminal(text):
 
 
 CONFIRM = ask_in_terminal  # ask() swaps in the popup's Allow/Deny
-NO = "The user didn't allow it, so nothing was done. Don't try another way."
+NO = "NOT DONE. The user clicked Deny, so nothing changed. Say that it was not done because they said no."
 RUNS = {".exe", ".bat", ".cmd", ".ps1", ".py", ".pyw", ".vbs", ".js", ".msi", ".lnk", ".reg", ".com", ".scr"}
 
 
@@ -407,6 +407,17 @@ def recycle_item(path: str):
     return "couldn't delete it" if os.path.exists(path) else "sent to the Recycle Bin"
 
 
+def create_folder(path: str):
+    """Create a new folder (and any missing folders above it). path: the full path, with the folder name exactly
+    as the user said it, spaces and all ("Old Photos" on D: is D:\\Old Photos). Asks the user first."""
+    if os.path.exists(path):
+        return f"{path} already exists"
+    if not CONFIRM(f"create the folder {path}"):
+        return NO
+    os.makedirs(path)
+    return f"created {path}"
+
+
 def remember(fact: str):
     """Save a lasting fact or preference about the user. Only use when the user asks you to remember something."""
     with open(HERE / "memory.md", "a", encoding="utf-8") as f:
@@ -416,7 +427,7 @@ def remember(fact: str):
 
 FUNCS = {f.__name__: f for f in [search_content, search_meaning, find_files, find_folders, read_file, list_dir, system_info,
                                   recent_files, look_at_image, look_at_screen, clipboard, browser_history, remember,
-                                  open_item, open_app, move_item, recycle_item]}
+                                  open_item, open_app, move_item, create_folder, recycle_item]}
 TYPES = {str: "string", int: "integer", float: "number"}
 
 
@@ -462,7 +473,7 @@ When the user names a folder ("my projects folder"), find_folders it, then list_
 Snippets are partial: when a found file looks relevant, read_file it before answering.
 Write every file or folder path in full inside backticks, like `D:\\Docs\\cv.pdf`, so the user can click it.
 Never write paths as markdown links or file:/// URLs.
-You can also open files and apps, move or rename, and send things to the Recycle Bin, but only when the user asks
+You can also open files and apps, create folders, move or rename, and send things to the Recycle Bin, but only when the user asks
 for that. Each action asks the user to allow it; if they don't, leave it.
 Copy file and folder names exactly as the tools return them. Don't guess what names mean or invent details.
 Be concise. Now: {now:%A %Y-%m-%d %H:%M}. Yesterday was {yesterday:%A %Y-%m-%d}.

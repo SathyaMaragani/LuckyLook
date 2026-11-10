@@ -150,6 +150,14 @@ with tempfile.TemporaryDirectory() as tmp:
     assert agent.run_tool("recycle_item", {"path": str(priv / "notes.md")}).startswith("refused") and len(asked) == 1
     agent.CONFIRM = lambda text: False
     assert agent.recycle_item(str(docs / "a.txt")) == agent.NO and (docs / "a.txt").exists()
+    assert agent.create_folder(str(tmp / "Taxes" / "2026")) == agent.NO and not (tmp / "Taxes").exists()
+    agent.CONFIRM = lambda text: asked.append(text) or True
+    assert agent.create_folder(str(tmp / "Taxes" / "2026")).startswith("created") and (tmp / "Taxes" / "2026").is_dir()
+    assert asked[-1] == f"create the folder {tmp / 'Taxes' / '2026'}"
+    assert "already exists" in agent.create_folder(str(tmp / "Taxes"))
+    assert agent.move_item(str(tmp / "Taxes"), str(tmp / "Tax papers")).startswith("moved")  # renaming a folder
+    assert (tmp / "Tax papers" / "2026").is_dir() and not (tmp / "Taxes").exists()
+    assert agent.run_tool("create_folder", {"path": str(priv / "new")}).startswith("refused")  # private stays private
 
 json.dumps(agent.SCHEMAS)
 assert list(lucky.find_paths("see `C:\\My Docs\\cv.pdf` and D:\\x\\y.txt.")) == [
