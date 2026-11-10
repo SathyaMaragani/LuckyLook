@@ -92,11 +92,11 @@ def search_meaning(query: str, limit: int = 10):
     "bill from the plumber" finds invoices, "trip ideas" finds travel notes. Use with search_content."""
     import numpy as np  # only needed here
     with closing(indexer.connect()) as con:
-        count = con.execute("select count(*) from vectors").fetchone()[0]
+        count = con.execute("select count(*) from vectors where length(vec) > 0").fetchone()[0]
         if not count:
             return "no documents understood by meaning yet (it builds in the background); use search_content"
         if count != MEANING["count"]:
-            rows = con.execute("select id, vec from vectors").fetchall()
+            rows = con.execute("select id, vec from vectors where length(vec) > 0").fetchall()
             MEANING.update(count=count, ids=[i for i, _ in rows],
                            matrix=np.frombuffer(b"".join(v for _, v in rows), dtype=np.float32).reshape(len(rows), -1))
         q = np.array(indexer.embed([f"search_query: {query}"])[0], dtype=np.float32)  # nomic's prefix for queries

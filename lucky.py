@@ -165,6 +165,7 @@ class Popup:
         changes = indexer.Watcher(indexer.ROOTS)  # before the full pass, so changes made during it aren't missed
         while True:
             meaning = True  # documents may need meaning vectors (embed_some says when they're all done)
+            meaning_retry = 0
             next_full = time.time() + REINDEX_HOURS * 3600
             try:
                 indexer.index(log=lambda m: self.q.put(("status", m)))
@@ -185,14 +186,14 @@ class Popup:
                         changes.give_back(paths)
                     except Exception as e:
                         print(f"live index error: {e}", flush=True)
-                if meaning:
+                if meaning and time.time() >= meaning_retry:
                     try:
                         meaning = indexer.embed_some() > 0
                     except RuntimeError:  # index busy (by hand): next time
                         pass
-                    except Exception as e:  # e.g. the embedding model isn't downloaded: try after the next full pass
-                        print(f"meaning index error: {e}", flush=True)
-                        meaning = False
+                    except Exception as e:  # e.g. Ollama busy or restarting, or the model isn't downloaded yet
+                        print(f"meaning index error: {e} (retrying in a minute)", flush=True)
+                        meaning_retry = time.time() + 60
 
     def answer(self, question, start):
         try:

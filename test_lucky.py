@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import tempfile
 import time
+import urllib.error
 from contextlib import closing
 from pathlib import Path
 
@@ -70,6 +71,18 @@ with tempfile.TemporaryDirectory() as tmp:
     (docs / "invoice.txt").unlink()
     indexer.update({str(docs / "invoice.txt")}, log=quiet)
     assert "invoice" not in agent.search_meaning("money")  # its vector went with it
+    real_embed = indexer.embed
+
+    def picky(texts):  # Ollama refusing one odd document must not block the others
+        if any("odd" in t for t in texts):
+            raise urllib.error.HTTPError("", 400, "Bad Request", None, None)
+        return real_embed(texts)
+    indexer.embed = picky
+    (docs / "odd.md").write_text("odd one", encoding="utf-8")
+    (docs / "trip.md").write_text("trip plans", encoding="utf-8")
+    indexer.index([str(tmp)], log=quiet)
+    assert indexer.embed_some() == 2 and indexer.embed_some() == 0  # both handled, nothing left to retry forever
+    assert agent.search_meaning("trip", limit=1).startswith(str(docs / "trip.md"))
 
     # live updates: new, edited, renamed folder, deleted
     (tmp / "live").mkdir()

@@ -19,6 +19,7 @@ import struct
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 import zipfile
 from ctypes import wintypes
@@ -292,7 +293,16 @@ def embed_some(n=256):
                            f"left join vectors v on v.id = f.id where v.id is null and f.ext in ({exts}) limit ?",
                            (*MEANING_EXT, n)).fetchall()
         if rows:
-            vecs = embed([f"search_document: {name}\n{text}" for _, name, text in rows])  # nomic's prefix for documents
+            texts = [f"search_document: {name}\n{text}" for _, name, text in rows]  # nomic's prefix for documents
+            try:
+                vecs = embed(texts)
+            except urllib.error.HTTPError:  # Ollama refused the batch: one by one, so one odd document can't block all
+                vecs = []
+                for t in texts:
+                    try:
+                        vecs += embed([t])
+                    except urllib.error.HTTPError:
+                        vecs.append([])  # an empty vector: skipped from now on, not retried forever
             con.executemany("insert or replace into vectors(id, vec) values (?, ?)",
                             [(fid, array.array("f", v).tobytes()) for (fid, _, _), v in zip(rows, vecs)])
             con.commit()
