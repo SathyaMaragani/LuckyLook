@@ -234,6 +234,21 @@ with tempfile.TemporaryDirectory() as tmp:
     assert agent.move_item(str(tmp / "Taxes"), str(tmp / "Tax papers")).startswith("moved")  # renaming a folder
     assert (tmp / "Tax papers" / "2026").is_dir() and not (tmp / "Taxes").exists()
     assert agent.run_tool("create_folder", {"path": str(priv / "new")}).startswith("refused")  # private stays private
+    # write_file: shows the text first, creates folders, an old file goes to the Recycle Bin (here: stubbed)
+    code = tmp / "Code" / "hello.py"
+    agent.CONFIRM = lambda text: False
+    assert agent.run_tool("write_file", {"path": str(code), "text": "print('hi')"}) == agent.NO and not code.exists()
+    agent.CONFIRM = lambda text: asked.append(text) or True
+    assert agent.run_tool("write_file", {"path": str(code), "text": "print('hi')"}) == f"created {code} (1 lines)"
+    assert asked[-1] == f"create {code} with:\n\nprint('hi')\n" and code.read_text() == "print('hi')\n"
+    real_bin, agent.to_recycle_bin = agent.to_recycle_bin, lambda p: os.remove(p) or False
+    long = "\n".join(f"x = {i}" for i in range(40))
+    assert agent.write_file(str(code), long).startswith("replaced") and code.read_text() == long + "\n"
+    assert "(the old one goes to the Recycle Bin)" in asked[-1] and asked[-1].endswith("x = 29\n… 10 more lines\n")
+    agent.to_recycle_bin = lambda p: True  # couldn't recycle: the old file stays as it was
+    assert agent.write_file(str(code), "new").startswith("couldn't") and code.read_text() == long + "\n"
+    agent.to_recycle_bin = real_bin
+    assert agent.run_tool("write_file", {"path": str(priv / "x.py"), "text": "1"}).startswith("refused")
 
 json.dumps(agent.SCHEMAS)
 # the model fits the PC (models.json): (graphics card GB, RAM GB)

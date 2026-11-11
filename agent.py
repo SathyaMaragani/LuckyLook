@@ -386,6 +386,7 @@ def ask_in_terminal(text):
 
 CONFIRM = ask_in_terminal  # ask() swaps in the popup's Allow/Deny
 NO = "NOT DONE. The user clicked Deny, so nothing changed. Say that it was not done because they said no."
+PREVIEW_LINES = 30  # of a file write_file is about to save, shown with Allow/Deny
 RUNS = {".exe", ".bat", ".cmd", ".ps1", ".py", ".pyw", ".vbs", ".js", ".msi", ".lnk", ".reg", ".com", ".scr"}
 
 
@@ -437,11 +438,35 @@ def recycle_item(path: str):
         return "doesn't exist"
     if not CONFIRM(f"send {path} to the Recycle Bin"):
         return NO
+    return "couldn't delete it" if to_recycle_bin(path) else "sent to the Recycle Bin"
+
+
+def to_recycle_bin(path):
+    """True if it's still there afterwards."""
     kind = "Directory" if os.path.isdir(path) else "File"
     quoted = path.replace("'", "''")
     powershell(f"Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::Delete{kind}"
                f"('{quoted}', 'OnlyErrorDialogs', 'SendToRecycleBin')")
-    return "couldn't delete it" if os.path.exists(path) else "sent to the Recycle Bin"
+    return os.path.exists(path)
+
+
+def write_file(path: str, text: str):
+    """Create a file with this text: code, notes, a list, anything (e.g. path D:\\Code\\hello.py, text: the whole program).
+    path: the full path; missing folders are created. If the file exists, the old one goes to the Recycle Bin first.
+    Asks the user first, showing them the text."""
+    if os.path.isdir(path):
+        return f"{path} is a folder; give the full path of the file"
+    lines = text.splitlines()
+    preview = "\n".join(lines[:PREVIEW_LINES]) + (f"\n… {len(lines) - PREVIEW_LINES} more lines" if len(lines) > PREVIEW_LINES else "")
+    old = os.path.exists(path)
+    verb = "replace" if old else "create"
+    if not CONFIRM(f"{verb} {path}{' (the old one goes to the Recycle Bin)' if old else ''} with:\n\n{preview}\n"):
+        return NO
+    if old and to_recycle_bin(path):
+        return "couldn't move the old file to the Recycle Bin, so nothing was written"
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    Path(path).write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+    return f"{'replaced' if old else 'created'} {path} ({len(lines)} lines)"
 
 
 def create_folder(path: str):
@@ -464,7 +489,7 @@ def remember(fact: str):
 
 FUNCS = {f.__name__: f for f in [search_content, search_meaning, find_files, find_folders, read_file, list_dir, system_info,
                                   recent_files, look_at_image, look_at_screen, clipboard, browser_history, remember,
-                                  open_item, open_app, move_item, create_folder, recycle_item]}
+                                  open_item, open_app, move_item, create_folder, write_file, recycle_item]}
 TYPES = {str: "string", int: "integer", float: "number"}
 
 
@@ -484,7 +509,7 @@ def run_tool(name, args):
     fn = FUNCS.get(name)
     if not fn:
         return f"unknown tool {name}"
-    if any(isinstance(v, str) and indexer.private(v) for v in args.values()):  # every tool, every path argument
+    if any(isinstance(v, str) and k != "text" and indexer.private(v) for k, v in args.items()):  # every path argument
         return ('refused. Tell the user exactly: "You\'ve put that folder off limits for me, so I can\'t look in it." '
                 "Don't give any other reason and don't try another way in.")
     try:
@@ -510,8 +535,9 @@ When the user names a folder ("my projects folder"), find_folders it, then list_
 Snippets are partial: when a found file looks relevant, read_file it before answering.
 Write every file or folder path in full inside backticks, like `D:\\Docs\\cv.pdf`, so the user can click it.
 Never write paths as markdown links or file:/// URLs.
-You can also open files and apps, create folders, move or rename, and send things to the Recycle Bin, but only when the user asks
-for that. Each action asks the user to allow it; if they don't, leave it.
+You can also open files and apps, create folders, write files (write_file: a script, code, notes), move or rename, and send
+things to the Recycle Bin, but only when the user asks for that. Each action asks the user to allow it; if they don't, leave it.
+When asked to make a file, write the whole content with write_file instead of pasting it into your answer.
 Copy file and folder names exactly as the tools return them. Don't guess what names mean or invent details.
 Be concise. Now: {now:%A %Y-%m-%d %H:%M}. Yesterday was {yesterday:%A %Y-%m-%d}.
 

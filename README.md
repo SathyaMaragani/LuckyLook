@@ -13,7 +13,7 @@
 - **What you were doing:** recently opened files, and websites you visited (Edge and Chrome history).
 - **What's on your screen:** "what does this error mean?" It looks at your screen. Also images and photos ("what does this receipt say?").
 - **What you copied:** text, files, or a Win+Shift+S snip.
-- **Does things, if you allow it:** "open my resume", "start Blender", "make a Taxes 2026 folder", "move the invoices into it", "delete the old installer". Every action shows **Allow / Deny** first, and deleting only ever goes to the Recycle Bin.
+- **Does things, if you allow it:** "open my resume", "start Blender", "make a Taxes 2026 folder", "write a Python script in it that adds up my invoices", "move the invoices into it", "delete the old installer". Every action shows **Allow / Deny** first, and deleting only ever goes to the Recycle Bin.
 - **Remembers you:** "remember that I prefer short answers" goes into `memory.md`. Tell it about yourself in `me.md` (tray menu › About me…). Your conversation is still there after a restart; `/new` starts fresh.
 
 Everything runs **on your computer** with [Ollama](https://ollama.com). No cloud, no account, nothing leaves the machine.
@@ -78,7 +78,7 @@ The top tab gets out of the way by itself during full-screen videos, games and s
 - Nothing is sent anywhere. The model, the index (`index.db`) and your notes all stay in this folder.
 - It reads file *names* everywhere on your fixed drives, and the *text* of documents and code outside system folders. Secrets files (`.env`, SSH keys, `.pem`/`.key`/`.pfx`, KeePass databases) are never read. OneDrive files that live only in the cloud are not downloaded.
 - It only looks at your screen, clipboard or browser history when you ask a question that needs them. The popup itself never appears in screenshots or screen shares.
-- It never changes anything without asking: opening, starting, creating folders, moving and deleting each wait for your **Allow**. Deleting goes to the Recycle Bin, and moving never overwrites.
+- It never changes anything without asking: opening, starting, creating folders, writing files, moving and deleting each wait for your **Allow**. Before writing a file it shows you what it will write. Deleting goes to the Recycle Bin, replacing a file sends the old one there too, and moving never overwrites.
 - **Keep things out:** tray menu › **Private folders and windows…** (or copy `local_settings.example.py` to `local_settings.py`). List folders LuckyLook must never touch (for example a browser profile), and window titles to black out whenever it looks at your screen. To keep browsing history out entirely, add `HISTORY = []`. Then tray menu › Restart LuckyLook.
 
 ## Settings

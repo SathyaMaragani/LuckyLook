@@ -474,7 +474,7 @@ class Popup:
             done.set()
         n = self.links
         self.links += 1
-        self.write(f"\n⚠ LuckyLook wants to {text}.  ", "ask")
+        self.write(f"\n⚠ LuckyLook wants to {text}{'' if text.endswith(chr(10)) else '.'}  ", "ask")  # no "." under a file preview
         self.write("Allow", ("button", f"allow{n}"))
         self.write("   ")
         self.write("Deny", ("button", f"deny{n}"))
