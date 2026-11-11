@@ -25,8 +25,10 @@ import indexer  # noqa: E402
 MOD_NOREPEAT, WM_HOTKEY = 0x4000, 0x312
 HOTKEY = "Ctrl+Alt+L"  # change it from the tray menu (saved in local_settings.py)
 CHAT = HERE / "chat.json"  # the conversation, so it's still there after a restart
-REINDEX_HOURS = 6  # full pass: the safety net for anything the live updates miss (and app/system folders)
-LIVE_SECONDS = 5  # how soon a file you save, rename or delete shows up in answers
+REINDEX_HOURS = 6  # a full pass of all drives this often (and from the tray menu: Reindex now)
+LIVE = False  # True: also watch for changes, so a file you save, rename or delete shows up within LIVE_SECONDS.
+LIVE_SECONDS = 5  # Costs a little CPU all the time, noticeable on battery.
+IDLE_MINUTES = 2  # pictures get described (graphics card busy) only after this long without mouse or keyboard
 KEEP_HISTORY = 12  # messages of earlier conversation sent along with each question
 WIDGET = True  # tab hanging off the top of the screen: hover pulls it down, click opens the popup (/widget hides it)
 PEEK = 6  # pixels of the tab left on screen while it's tucked away
@@ -135,6 +137,7 @@ class Popup:
 
         self.make_widget()
         self.tray = None  # made on the hotkey thread, whose message loop delivers its clicks
+        self.reindex = threading.Event()  # Reindex now, from the tray
         threading.Thread(target=self.hotkey_loop, daemon=True).start()
         r.after(30, self.pump)
 
@@ -161,39 +164,55 @@ class Popup:
                 user32.DispatchMessageW(ctypes.byref(msg))  # tray clicks
 
     def index_loop(self):
-        """A full pass now and every REINDEX_HOURS; in between, file changes reach the index within LIVE_SECONDS."""
-        changes = indexer.Watcher(indexer.ROOTS)  # before the full pass, so changes made during it aren't missed
+        """A full pass every REINDEX_HOURS, counted from the last one (so a restart doesn't redo it), and whenever
+        Reindex now is clicked. With LIVE, file changes in between reach the index within LIVE_SECONDS."""
+        changes = indexer.Watcher(indexer.ROOTS) if LIVE else None  # before the pass, so changes during it count
+        next_full = indexer.last_full() + REINDEX_HOURS * 3600
+        meaning = pictures = True  # documents may need meaning vectors, pictures descriptions (each says when done)
+        meaning_retry = picture_retry = 0
         while True:
-            meaning = True  # documents may need meaning vectors (embed_some says when they're all done)
-            meaning_retry = 0
-            next_full = time.time() + REINDEX_HOURS * 3600
-            try:
-                indexer.index(log=lambda m: self.q.put(("status", m)))
-            except Exception as e:  # e.g. indexer.py is running by hand right now
-                print(f"index error: {e}", flush=True)  # lands in lucky.log
-                self.q.put(("status", f"index error: {e} (retrying in 10 min)"))
-                next_full = time.time() + 600
-            while time.time() < next_full:
-                time.sleep(LIVE_SECONDS)
+            if self.reindex.is_set() or time.time() >= next_full:
+                self.reindex.clear()
+                meaning = pictures = True
+                next_full = time.time() + REINDEX_HOURS * 3600
+                try:
+                    indexer.index(log=lambda m: self.q.put(("status", m)))
+                except Exception as e:  # e.g. indexer.py is running by hand right now
+                    print(f"index error: {e}", flush=True)  # lands in lucky.log
+                    self.q.put(("status", f"index error: {e} (retrying in 10 min)"))
+                    next_full = time.time() + 600
+            if self.reindex.wait(LIVE_SECONDS):
+                continue
+            if changes:
                 paths = changes.take()
                 if paths is None:  # Windows dropped some changes: only a full pass can catch up
-                    break
+                    next_full = 0
+                    continue
                 if paths:
                     try:
                         indexer.update(paths, log=lambda m: None)
-                        meaning = True
+                        meaning = pictures = True
                     except RuntimeError:  # indexer.py running by hand: apply these when it's done
                         changes.give_back(paths)
                     except Exception as e:
                         print(f"live index error: {e}", flush=True)
-                if meaning and time.time() >= meaning_retry:
-                    try:
-                        meaning = indexer.embed_some() > 0
-                    except RuntimeError:  # index busy (by hand): next time
-                        pass
-                    except Exception as e:  # e.g. Ollama busy or restarting, or the model isn't downloaded yet
-                        print(f"meaning index error: {e} (retrying in a minute)", flush=True)
-                        meaning_retry = time.time() + 60
+            if meaning and time.time() >= meaning_retry:
+                try:
+                    meaning = indexer.embed_some() > 0
+                except RuntimeError:  # index busy (by hand): next time
+                    pass
+                except Exception as e:  # e.g. Ollama busy or restarting, or the model isn't downloaded yet
+                    print(f"meaning index error: {e} (retrying in a minute)", flush=True)
+                    meaning_retry = time.time() + 60
+            elif pictures and time.time() >= picture_retry and idle() and plugged_in():
+                try:
+                    pictures = indexer.describe_some(agent.look_at_image) > 0
+                    meaning = True  # the new descriptions get meaning vectors too
+                except RuntimeError:  # index busy (by hand): next time
+                    pass
+                except Exception as e:  # e.g. Ollama not running
+                    print(f"picture index error: {e} (retrying in 10 minutes)", flush=True)
+                    picture_retry = time.time() + 600
 
     def answer(self, question, start):
         try:
@@ -556,7 +575,33 @@ SETTINGS = {  # tray menu choices that the UI thread carries out
     "private": lambda p: p.edit("local_settings.py", "local_settings.example.py"),
     "hotkey": Popup.change_hotkey,
     "restart": Popup.restart,
+    "reindex": lambda p: p.reindex.set(),  # index_loop starts a full pass within a few seconds
 }
+
+
+class LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("size", wintypes.UINT), ("time", wintypes.DWORD)]
+
+
+def idle():
+    """Away from the PC: no mouse or keyboard for IDLE_MINUTES, and no full-screen game, video or slides."""
+    info, state = LASTINPUTINFO(ctypes.sizeof(LASTINPUTINFO)), ctypes.c_int()
+    ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info))
+    ctypes.windll.shell32.SHQueryUserNotificationState(ctypes.byref(state))
+    away_ms = (ctypes.windll.kernel32.GetTickCount() - info.time) & 0xFFFFFFFF  # the tick count wraps every 49 days
+    return away_ms >= IDLE_MINUTES * 60_000 and state.value not in (2, 3, 4)
+
+
+class SYSTEM_POWER_STATUS(ctypes.Structure):
+    _fields_ = [("ac", ctypes.c_ubyte), ("flag", ctypes.c_ubyte), ("percent", ctypes.c_ubyte), ("saver", ctypes.c_ubyte),
+                ("life", wintypes.DWORD), ("full_life", wintypes.DWORD)]
+
+
+def plugged_in():
+    """On the charger (or a desktop PC): the graphics card can work on pictures without draining the battery."""
+    s = SYSTEM_POWER_STATUS()
+    ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(s))
+    return s.ac != 0  # 0 battery, 1 charger, 255 unknown
 
 
 class MONITORINFO(ctypes.Structure):
@@ -600,7 +645,7 @@ class Tray:
     """LuckyLook's icon in the system tray. Click: open or close the popup. Right-click: a menu.
     Runs on the hotkey thread (its message loop delivers the clicks) and talks to the UI only through q."""
     MENU = [(1, f"Open LuckyLook\t{HOTKEY}", "toggle"), (2, "Show or hide the top tab", "widget"), (0, None, None),
-            (4, "About me…", "aboutme"), (5, "Private folders and windows…", "private"), (6, "Change hotkey…", "hotkey"),
+            (8, "Reindex now", "reindex"), (4, "About me…", "aboutme"), (5, "Private folders and windows…", "private"), (6, "Change hotkey…", "hotkey"),
             (7, "Restart LuckyLook (applies settings)", "restart"), (0, None, None), (3, "Quit LuckyLook", "quit")]
 
     def __init__(self, q):

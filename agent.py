@@ -73,7 +73,7 @@ MAX_STEPS = 8
 MAX_TOOL_CHARS = 8000
 MAX_READ = 12000
 NO_WINDOW = 0x08000000  # don't flash a console when running under pythonw
-IMAGE_EXT = {".png", ".jpg", ".jpeg"}  # webp reached the model blank in testing
+IMAGE_EXT = indexer.IMAGE_EXT
 # browser histories browser_history can search (one per profile). Empty this list to keep browsing out of it.
 HISTORY = [os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\User Data\*\History"),
            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\*\History")]
@@ -106,7 +106,8 @@ def like(s):
 # ---------- tools (read-only, except remember) ----------
 
 def search_content(query: str, limit: int = 10):
-    """Full-text search INSIDE documents, PDFs, notes and code on this PC. Returns best matching files with snippets."""
+    """Full-text search INSIDE documents, PDFs, Word, PowerPoint, Excel, notes, code and zips (the file names in them)
+    on this PC, and in descriptions of pictures (photos, screenshots, scans). Returns best matching files with snippets."""
     words = re.findall(r"\w+", query)
     if not words:
         return "empty query"
@@ -123,8 +124,9 @@ MEANING = {"count": -1}  # all document vectors as one matrix, reloaded when the
 
 
 def search_meaning(query: str, limit: int = 10):
-    """Find documents (PDF, Word, notes, text) by what they're about, when the exact words aren't known:
-    "bill from the plumber" finds invoices, "trip ideas" finds travel notes. Use with search_content."""
+    """Find documents (PDF, Word, PowerPoint, notes, text) and pictures by what they're about, when the exact words
+    aren't known: "bill from the plumber" finds invoices, "trip ideas" finds travel notes, "my dog at the beach" finds
+    photos. Use with search_content."""
     import numpy as np  # only needed here
     with closing(indexer.connect()) as con:
         count = con.execute("select count(*) from vectors where length(vec) > 0").fetchone()[0]

@@ -1,13 +1,18 @@
 """Self-check: python test_lucky.py"""
+import contextlib
 import datetime
 import json
 import msvcrt
 import os
+import queue
 import shutil
 import sqlite3
 import tempfile
+import threading
 import time
+import types
 import urllib.error
+import zipfile
 from contextlib import closing
 from pathlib import Path
 
@@ -83,6 +88,77 @@ with tempfile.TemporaryDirectory() as tmp:
     indexer.index([str(tmp)], log=quiet)
     assert indexer.embed_some() == 2 and indexer.embed_some() == 0  # both handled, nothing left to retry forever
     assert agent.search_meaning("trip", limit=1).startswith(str(docs / "trip.md"))
+
+    # PowerPoint, Excel, old Office, rtf, zips
+    with zipfile.ZipFile(docs / "deck.pptx", "w") as z:
+        z.writestr("ppt/slides/slide10.xml", "<p:sld><a:p><a:r><a:t>closing walrus</a:t></a:r></a:p></p:sld>")
+        z.writestr("ppt/slides/slide2.xml", "<a:p><a:t>opening walrus</a:t></a:p>")
+    with zipfile.ZipFile(docs / "sums.xlsx", "w") as z:
+        z.writestr("xl/sharedStrings.xml", "<sst><si><t>Rent</t></si><si><r><t>Pen</t></r><r><t>guin</t></r></si></sst>")
+        z.writestr("xl/worksheets/sheet1.xml", '<worksheet><cols><col min="1"/></cols><sheetData><row r="1"><c r="A1" '
+                   't="s"><v>0</v></c><c r="B1"><f>SUM(1,2)</f><v>1250</v></c></row><row r="2"><c r="A2" t="s"><v>1</v>'
+                   '</c><c r="B2" t="inlineStr"><is><t>wombat</t></is></c><c r="C2"/></row></sheetData></worksheet>')
+    with zipfile.ZipFile(docs / "backup.zip", "w") as z:
+        z.writestr("2024/tax report.pdf", "x")
+    (docs / "old.doc").write_bytes(b"\xd0\xcf\x00\x01" + "hello narwhal".encode("utf-16-le") + b"\xff")
+    (docs / "letter.rtf").write_text(r"{\rtf1\ansi{\fonttbl{\f0 Arial;}}\f0 caf\'e9 \b bold\b0\par next \u8364?}")
+    assert indexer.extract(str(docs / "deck.pptx")).split() == ["opening", "walrus", "closing", "walrus"]
+    assert indexer.extract(str(docs / "sums.xlsx")) == "Rent\t1250\nPenguin\twombat\t"
+    assert "café bold\nnext €" in indexer.extract(str(docs / "letter.rtf"))
+    indexer.index([str(tmp)], log=quiet)
+    for word, name in [("walrus", "deck.pptx"), ("wombat", "sums.xlsx"), ("narwhal", "old.doc"), ("tax report", "backup.zip")]:
+        assert str(docs / name) in agent.search_content(word), word
+
+    # pictures get described by the model (faked here), only where text is read, never twice
+    (docs / "beach.jpg").write_bytes(b"\xff\xd8" + b"0" * 60_000)
+    (docs / "icon.png").write_bytes(b"0" * 1000)  # too small: an icon
+    (tmp / "AppData").mkdir()
+    (tmp / "AppData" / "art.png").write_bytes(b"0" * 60_000)  # app folder: names only
+    indexer.index([str(tmp)], log=quiet)
+    looked = []
+    real_live, indexer.live = indexer.live, lambda p: real_live(p.replace(str(tmp), "D:\\t"))  # tmp is in AppData itself
+
+    def down(path, prompt):
+        raise urllib.error.URLError("refused")
+    try:
+        indexer.describe_some(down)
+        raise AssertionError("Ollama down must be retried later, not skipped")
+    except urllib.error.URLError:
+        pass
+    while indexer.describe_some(lambda path, prompt: looked.append(path) or "A photo of a red kayak on a beach."):
+        pass
+    indexer.live = real_live
+    assert looked == [str(docs / "beach.jpg")]
+    assert str(docs / "beach.jpg") in agent.search_content("kayak") and "art.png" not in agent.search_content("art")
+    while indexer.embed_some():
+        pass
+    with closing(indexer.connect()) as con:  # the description got a meaning vector; the skipped picture didn't
+        assert [r[0] for r in con.execute("select f.name from vectors v join files f on f.id = v.id where f.ext "
+                                          "in ('.png', '.jpg')")] == ["beach.jpg"]
+
+    # full passes: every REINDEX_HOURS counted from the last one (a restart doesn't redo it), and from Reindex now
+    assert indexer.last_full() == 0  # passes of some folders don't count
+    real_roots, indexer.ROOTS = indexer.ROOTS, [str(tmp)]
+    lucky.idle, lucky.LIVE_SECONDS = (lambda: False), 0.1  # left so: the loops below run until the test ends
+
+    def start():
+        p = types.SimpleNamespace(q=queue.Queue(), reindex=threading.Event())
+        threading.Thread(target=lucky.Popup.index_loop, args=(p,), daemon=True).start()
+        return p
+
+    def passed(p, seconds):
+        end = time.time() + seconds
+        while time.time() < end:
+            with contextlib.suppress(queue.Empty):
+                if p.q.get(timeout=0.1)[1].startswith("index ready"):
+                    return True
+        return False
+    p = start()
+    assert passed(p, 30) and not passed(p, 1)  # never done: a pass now, then none for hours
+    p.reindex.set()
+    assert passed(p, 30) and time.time() - indexer.last_full() < 30  # Reindex now
+    assert not passed(start(), 1)  # restarted minutes later: no pass
+    indexer.ROOTS = real_roots
 
     # live updates: new, edited, renamed folder, deleted
     (tmp / "live").mkdir()

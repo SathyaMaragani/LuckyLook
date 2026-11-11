@@ -8,7 +8,7 @@
 
 <img src="assets/screenshot-tab.png" width="320" alt="The LuckyLook tab at the top of the screen, pulled down on hover">
 
-- **Files and documents:** "where is my resume?", "what did I quote the client for the logo?", "what's eating my disk?". Searches inside documents, PDFs, Word files, notes and code, by exact words *and by meaning*: "the bill from the plumber" finds the invoice even if it never says "bill".
+- **Files and documents:** "where is my resume?", "what did I quote the client for the logo?", "what's eating my disk?". Searches inside documents, PDFs, Word, PowerPoint and Excel files (old `.doc`/`.xls`/`.ppt` too), notes, code and zips (the names of the files in them), and your pictures: while you're away from the PC, the model describes each photo, screenshot and scan and copies its text, so "the photo of my car" finds it. All by exact words *and by meaning*: "the bill from the plumber" finds the invoice even if it never says "bill".
 - **Your PC:** free space, installed apps, what's using memory, battery, specs.
 - **What you were doing:** recently opened files, and websites you visited (Edge and Chrome history).
 - **What's on your screen:** "what does this error mean?" It looks at your screen. Also images and photos ("what does this receipt say?").
@@ -50,7 +50,7 @@ python -m venv .venv
 
 (`qwen3.5:9b` is for an 8 GB graphics card. With a different PC, pull the model `models.json` lists for it instead; `install.bat` does this for you.)
 
-LuckyLook now runs in the background: press **Ctrl+Alt+L**. The first time, it indexes every fixed drive, and that can take an hour or more on a big disk. The status line at the bottom of the popup shows progress, and you can ask questions meanwhile. After that it stays up to date live: a file you save, rename, move or delete shows up in answers within about 5 seconds. App and system folders (AppData, Program Files) change constantly, so they're refreshed by a full pass every 6 hours instead, and that pass only re-reads changed files. Search by meaning builds up in the background too, at about 20 documents a second with a graphics card.
+LuckyLook now runs in the background: press **Ctrl+Alt+L**. The first time, it indexes every fixed drive, and that can take an hour or more on a big disk. The status line at the bottom of the popup shows progress, and you can ask questions meanwhile. After that it refreshes every 6 hours (counted from the last time, so restarting doesn't redo it), and only re-reads files that changed. To pick up new files right away: tray menu › **Reindex now**. If you'd rather have changes show up within seconds, set `LIVE = True` in `local_settings.py`; that keeps a small background job running, which you may notice on battery. Search by meaning builds up in the background too, at about 20 documents a second with a graphics card.
 
 Optional: copy `me.example.md` to `me.md` and tell it about yourself (your name, your work, where your projects live).
 
@@ -83,7 +83,7 @@ The top tab gets out of the way by itself during full-screen videos, games and s
 
 ## Settings
 
-Put overrides in `local_settings.py`: `HOTKEY`, `MODEL`, `ROOTS` (which drives to index), `PRIVATE`, `PRIVATE_WINDOWS`, `HISTORY`. Restart LuckyLook from the tray menu afterwards. Other constants are at the top of each file: `lucky.py` has the look and the re-index timings.
+Put overrides in `local_settings.py`: `HOTKEY`, `MODEL`, `ROOTS` (which drives to index), `REINDEX_HOURS`, `LIVE`, `PRIVATE`, `PRIVATE_WINDOWS`, `HISTORY`. Restart LuckyLook from the tray menu afterwards. Other constants are at the top of each file: `lucky.py` has the look and the re-index timings.
 
 **Which model:** `models.json` maps hardware to a model: by graphics card memory, or by RAM when there's no usable card. Edit it to change the choices for everyone; set `MODEL` in `local_settings.py` to force one on your own PC. To see what your PC gets: `.venv\Scripts\python -c "import agent; print(agent.specs(), agent.MODEL)"`. Any Ollama model with tool calling works. For screen and image questions, it also needs vision. `bench.py` compares models on questions about your PC: `.venv\Scripts\python bench.py qwen3.5:9b qwen3:8b --think`.
 

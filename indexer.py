@@ -54,13 +54,22 @@ PRIVATE = [os.path.normcase(os.path.realpath(os.path.expandvars(p))) for p in PR
 TEXT_EXT = set(""".txt .md .markdown .rst .csv .tsv .json .yaml .yml .toml .ini .cfg .conf .xml .html .htm .css
  .scss .js .jsx .ts .tsx .mjs .cjs .py .ipynb .java .kt .c .h .cpp .hpp .cs .go .rs .rb .php .swift .sh .ps1 .bat
  .cmd .sql .r .lua .dart .vue .svelte .tex .srt .gd .gradle .sln .csproj""".split())
-DOC_EXT = {".docx"} | ({".pdf"} if PdfReader else set())
+# Office and other formats extract() reads: zipped XML, old binary Office (its text runs), and zips (the names inside)
+ZIP_XML = {".docx": r"word/document\.xml", ".pptx": r"ppt/slides/slide\d+\.xml", ".odt": r"content\.xml",
+           ".ods": r"content\.xml", ".odp": r"content\.xml", ".epub": r".+\.x?html?"}
+DOC_EXT = {*ZIP_XML, ".xlsx", ".rtf", ".doc", ".xls", ".ppt", ".zip"} | ({".pdf"} if PdfReader else set())
 MAX_TEXT_BYTES = 2_000_000
 MAX_DOC_BYTES = 30_000_000
 MAX_CHARS = 200_000
+# Pictures: the chat model describes them (and copies their text) while the PC is idle, see describe_some.
+IMAGE_EXT = {".png", ".jpg", ".jpeg"}  # webp reached the model blank in testing
+MIN_IMAGE_BYTES = 50_000  # smaller ones are mostly icons and app artwork
+DESCRIBE = ("Describe this picture in two or three sentences for a search index: what it shows and what kind of image "
+            "it is (photo, screenshot, diagram, scan, receipt...). Then copy any readable text, briefly.")
 # Search by meaning: documents (not code or data) get an embedding from this local Ollama model.
 EMBED_MODEL = "nomic-embed-text"
-MEANING_EXT = {".pdf", ".docx", ".md", ".markdown", ".txt", ".rst"}
+MEANING_EXT = {".pdf", ".docx", ".md", ".markdown", ".txt", ".rst", ".pptx", ".odt", ".odp", ".epub", ".rtf", ".doc",
+               ".ppt", *IMAGE_EXT}
 OLLAMA_EMBED = "http://localhost:11434/api/embed"
 SECRET = re.compile(r"^(\.env.*|id_rsa.*|id_ed25519.*|.*\.(pem|key|pfx|p12|kdbx|ppk))$", re.I)
 
@@ -76,10 +85,17 @@ def connect():
                                          size int, mtime real, seen int);
         create index if not exists files_size on files(size);
         create index if not exists files_mtime on files(mtime);
+        create index if not exists files_ext on files(ext);  -- embed_some finds documents without scanning all text
         create table if not exists folders(path text primary key, name text, seen int);
         create virtual table if not exists content using fts5(name, body, tokenize='porter unicode61 remove_diacritics 2');
         create table if not exists vectors(id integer primary key, vec blob);  -- meaning of a document (embed_some)
+        create table if not exists runs(full real);  -- when the last full pass of all drives finished
     """)
+    if con.execute("pragma user_version").fetchone()[0] < 1:  # 1: Office, rtf and zips are read too
+        new = DOC_EXT - {".docx", ".pdf"}  # files indexed before that: the next pass reads them again
+        con.execute(f"update files set mtime = 0 where ext in ({','.join('?' * len(new))})", (*new,))
+        con.execute("pragma user_version = 1")
+        con.commit()
     return con
 
 
@@ -98,11 +114,53 @@ def readable(name, size):
         return False
     if ext in TEXT_EXT:
         return size <= MAX_TEXT_BYTES
-    return ext in DOC_EXT and size <= MAX_DOC_BYTES
+    return ext == ".zip" or ext in DOC_EXT and size <= MAX_DOC_BYTES  # a zip's list of names is quick at any size
+
+
+def xml_text(xml):
+    xml = re.sub(r"</(w:p|a:p|text:p|text:h|p|div|h\d|li|tr)>|<(br|text:line-break|text:tab)\b[^>]*>", "\n", xml)
+    return html.unescape(re.sub(r"<[^>]+>", "", xml))
+
+
+def xlsx_text(z):
+    names = z.namelist()
+    shared = [xml_text(s) for s in re.findall(r"<si>(.*?)</si>", z.read("xl/sharedStrings.xml").decode("utf-8", "ignore"),
+                                              re.S)] if "xl/sharedStrings.xml" in names else []
+    rows = []
+    for sheet in sorted(n for n in names if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", n)):
+        for row in re.findall(r"<row\b[^>]*>(.*?)</row>", z.read(sheet).decode("utf-8", "ignore"), re.S):
+            cells = []
+            for attrs, body in re.findall(r"<c\b([^>]*?)(?:/>|>(.*?)</c>)", row, re.S):
+                v = re.search(r"<v>(.*?)</v>", body)
+                cells.append(shared[int(v[1])] if v and 't="s"' in attrs else v[1] if v else xml_text(body))
+            rows.append("\t".join(cells))
+    return "\n".join(rows)
 
 
 def extract(path, limit=MAX_CHARS):
     ext = os.path.splitext(path)[1].lower()
+    if ext in ZIP_XML or ext in (".xlsx", ".zip"):
+        with zipfile.ZipFile(path) as z:
+            if ext == ".zip":
+                return "\n".join(z.namelist())[:limit]
+            if ext == ".xlsx":
+                return xlsx_text(z)[:limit]
+            parts = sorted((n for n in z.namelist() if re.fullmatch(ZIP_XML[ext], n)),
+                           key=lambda n: int(re.sub(r"\D", "", n) or 0))  # slide2 before slide10
+            return "\n".join(xml_text(z.read(n).decode("utf-8", "ignore")) for n in parts)[:limit]
+    if ext in (".doc", ".xls", ".ppt"):  # old binary Office: its text sits in the file as UTF-16 or plain runs
+        with open(path, "rb") as f:
+            data = f.read()
+        runs = [r.decode("utf-16-le") for r in re.findall(rb"(?:[\x20-\x7e]\x00){4,}", data)]
+        runs += [r.decode("latin-1") for r in re.findall(rb"[\x20-\x7e]{8,}", data)]
+        return "\n".join(runs)[:limit]
+    if ext == ".rtf":
+        with open(path, encoding="latin-1") as f:
+            rtf = f.read(limit * 4)
+        rtf = re.sub(r"\\'([0-9a-f]{2})", lambda m: bytes.fromhex(m[1]).decode("cp1252", "ignore"), rtf)
+        rtf = re.sub(r"\\u(-?\d+)\??", lambda m: chr(int(m[1]) % 65536), rtf)
+        rtf = re.sub(r"\\(par|line)\b ?", "\n", rtf)
+        return re.sub(r"\\[a-z]+-?\d* ?|\\\*|[{}]", "", rtf)[:limit]
     if ext == ".pdf":
         parts, n = [], 0
         for page in PdfReader(path).pages:
@@ -112,10 +170,6 @@ def extract(path, limit=MAX_CHARS):
                 break
         # pypdf can return half an emoji (an unpaired surrogate), which SQLite refuses to store
         return "\n".join(parts)[:limit].encode("utf-8", "ignore").decode()
-    if ext == ".docx":
-        with zipfile.ZipFile(path) as z:
-            xml = z.read("word/document.xml").decode("utf-8", "ignore")
-        return html.unescape(re.sub(r"<[^>]+>", "", xml.replace("</w:p>", "\n")))[:limit]
     with open(path, encoding="utf-8", errors="ignore") as f:
         return f.read(limit).replace("\x00", "")
 
@@ -163,10 +217,10 @@ def exclusive():
             msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
 
-def index(roots=ROOTS, log=print):
-    """Full pass: updates index.db for these folders."""
+def index(roots=None, log=print):
+    """Full pass: updates index.db for these folders (all drives in ROOTS by default)."""
     with exclusive():
-        _index(roots, log)
+        _index(roots or ROOTS, log)
 
 
 def add_folder(con, path, name, run):
@@ -223,9 +277,18 @@ def _index(roots, log):
         con.execute(f"delete from vectors where id in (select id from files where {where})", args)
         con.execute(f"delete from files where {where}", args)
         con.execute(f"delete from folders where {where}", args)
+    if roots == ROOTS:
+        con.execute("delete from runs")
+        con.execute("insert into runs values (?)", (time.time(),))
     con.commit()
     con.close()
     log(f"index ready · {seen:,} files ({changed:,} new or changed)")
+
+
+def last_full():
+    """When the last full pass of all drives finished (0: never)."""
+    with contextlib.closing(connect()) as con:
+        return con.execute("select max(full) from runs").fetchone()[0] or 0
 
 
 # ---------- live updates between full passes ----------
@@ -289,8 +352,10 @@ def embed_some(n=256):
     with exclusive():
         con = connect()
         exts = ",".join("?" * len(MEANING_EXT))
-        rows = con.execute(f"select f.id, f.name, substr(c.body, 1, 1500) from files f join content c on c.rowid = f.id "
-                           f"left join vectors v on v.id = f.id where v.id is null and f.ext in ({exts}) limit ?",
+        # documents by type first (files_ext), never a scan of all text: this runs after every change on the PC
+        rows = con.execute(f"select f.id, f.name, substr(c.body, 1, 1500) from files f left join vectors v on v.id = f.id "
+                           f"cross join content c on c.rowid = f.id where f.ext in ({exts}) and v.id is null "
+                           f"and c.body <> '' limit ?",  # empty: a picture describe_some couldn't or mustn't look at
                            (*MEANING_EXT, n)).fetchall()
         if rows:
             texts = [f"search_document: {name}\n{text}" for _, name, text in rows]  # nomic's prefix for documents
@@ -308,6 +373,42 @@ def embed_some(n=256):
             con.commit()
         con.close()
     return len(rows)
+
+
+def describe_some(look, n=3):
+    """Describes up to n pictures that have no description yet with look(path, prompt) (the chat model), so they're
+    found like documents. Returns how many it went through: 0 means all done. ~5 s a picture on an 8 GB graphics card."""
+    exts = ",".join("?" * len(IMAGE_EXT))
+    con = connect()
+    rows = con.execute(f"select f.id, f.path, f.name, f.mtime from files f left join content c on c.rowid = f.id "
+                       f"where f.ext in ({exts}) and f.size between ? and ? and c.rowid is null limit 500",
+                       (*IMAGE_EXT, MIN_IMAGE_BYTES, MAX_DOC_BYTES)).fetchall()
+    con.close()
+    done, looked = [], 0
+    for fid, path, name, mtime in rows:
+        if looked == n:
+            break
+        text = ""
+        try:  # only where a full pass would read text: not app/system/private folders, not cloud-only files
+            if live(path) and not private(path) and not os.stat(path).st_file_attributes & CLOUD_ATTRS:
+                looked += 1
+                text = look(path, DESCRIBE).strip()
+        except urllib.error.HTTPError:  # Ollama couldn't take this picture: skip it from now on
+            pass
+        except urllib.error.URLError:  # Ollama not running: try again later
+            raise
+        except OSError:  # gone or locked
+            pass
+        done.append((fid, name, mtime, text))
+    with exclusive():  # the slow part ran without the lock, so live updates weren't held up
+        con = connect()
+        for fid, name, mtime, text in done:
+            if con.execute("select mtime from files where id=?", (fid,)).fetchone() == (mtime,):  # unchanged meanwhile
+                # an empty row marks it as done (and keeps names-only folders' pictures out of text search)
+                con.execute("insert into content(rowid, name, body) values (?,?,?)", (fid, name if text else "", text))
+        con.commit()
+        con.close()
+    return len(done)
 
 
 class Watcher:
