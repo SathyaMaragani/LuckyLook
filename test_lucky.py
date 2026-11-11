@@ -1,6 +1,7 @@
 """Self-check: python test_lucky.py"""
 import contextlib
 import datetime
+import io
 import json
 import msvcrt
 import os
@@ -287,9 +288,24 @@ with tempfile.TemporaryDirectory() as tmp:
     assert agent.open_website("imdb.com", "Dune") == "opened https://www.bing.com/search?q=Dune+site%3Aimdb.com"
     assert agent.open_website("localhost:3000") == "opened https://localhost:3000"
     assert agent.open_website("javascript:alert(1)").startswith("only") and agent.open_website("file:///C:/x").startswith("only")
+    # play=True: asks before anything goes to YouTube, then opens the first real video (not the ad), else the results
+    page = (b'{"adSlotRenderer":{"videoId":"AAAAAAAAAAA"}},{"videoRenderer":{"videoId":"JGwWNGJdvx8","thumbnail":{},'
+            b'"title":{"runs":[{"text":"Ed Sheeran - Shape of You (Official \\"Video\\")"}]}}}')
+    fetched = []
+    real_open, agent.urllib.request.urlopen = agent.urllib.request.urlopen, lambda req, timeout: fetched.append(req.full_url) or io.BytesIO(page)
+    agent.CONFIRM = lambda text: asked.append(text) and False
+    assert agent.open_website("youtube", "Shape of You", play=True) == agent.NO and fetched == []
+    assert asked[-1] == "play the top YouTube result for “Shape of You” in Edge"
+    agent.CONFIRM = lambda text: asked.append(text) or True
+    assert agent.open_website("", "Shape of You", play=True) == \
+        'playing “Ed Sheeran - Shape of You (Official "Video")” (https://www.youtube.com/watch?v=JGwWNGJdvx8)'
+    assert opened[-1].endswith('"https://www.youtube.com/watch?v=JGwWNGJdvx8"') and fetched[-1].endswith("Shape+of+You")
+    page = b"<html>consent page</html>"
+    assert "couldn't read" in agent.open_website("youtube", "Shape of You", play=True) and "results?search_query" in opened[-1]
+    agent.urllib.request.urlopen = real_open
     real_private, indexer.private = indexer.private, lambda p: p.endswith("Profile 6")
     agent.EDGE_PROFILE = "Profile 6"
-    assert agent.open_website("youtube.com").startswith("refused") and len(opened) == 5
+    assert agent.open_website("youtube.com").startswith("refused") and len(opened) == 7
     agent.EDGE_PROFILE, indexer.private, agent.os.startfile = "Default", real_private, real_start
     # remind_me: times in the past refused; due ones come out once, late ones say so
     agent.REMINDERS = tmp / "reminders.json"

@@ -13,7 +13,7 @@
 - **What you were doing:** recently opened files, and websites you visited (Edge and Chrome history).
 - **What's on your screen:** "what does this error mean?" It looks at your screen. Also images and photos ("what does this receipt say?").
 - **What you copied:** text, files, or a Win+Shift+S snip.
-- **Does things, if you allow it:** "open my resume", "start Blender", "close Chrome", "play Shape of You on YouTube" (opens Edge), "make a Taxes 2026 folder", "write a Python script in it that adds up my invoices", "run it", "change the port in config.py to 8080", "move the invoices into it", "delete the old installer". Every action shows **Allow / Deny** first, with the exact command or change, and deleting only ever goes to the Recycle Bin.
+- **Does things, if you allow it:** "open my resume", "start Blender", "close Chrome", "play Shape of You" (plays the top YouTube result in Edge), "make a Taxes 2026 folder", "write a Python script in it that adds up my invoices", "run it", "change the port in config.py to 8080", "move the invoices into it", "delete the old installer". Every action shows **Allow / Deny** first, with the exact command or change, and deleting only ever goes to the Recycle Bin.
 - **Reminders:** "remind me at 5 pm to call the bank" pops up a Windows notification then.
 - **When something's wrong:** "why did my PC crash last night?" (shutdowns, blue screens, app crashes), "what starts with Windows?"
 - **Remembers you:** "remember that I prefer short answers" goes into `memory.md`. Tell it about yourself in `me.md` (tray menu › About me…). Your conversation is still there after a restart; `/new` starts fresh.
@@ -81,7 +81,7 @@ The top tab gets out of the way by itself during full-screen videos, games and s
 - It reads file *names* everywhere on your fixed drives, and the *text* of documents and code outside system folders. Secrets files (`.env`, SSH keys, `.pem`/`.key`/`.pfx`, KeePass databases) are never read. OneDrive files that live only in the cloud are not downloaded.
 - It only looks at your screen, clipboard or browser history when you ask a question that needs them. The popup itself never appears in screenshots or screen shares.
 - It never changes anything without asking: opening, starting and closing apps, opening websites, creating folders, writing and editing files, running commands, moving and deleting each wait for your **Allow**. It shows you what it will write, change or run first. Deleting goes to the Recycle Bin, writing over or editing a file sends the old version there too, and moving never overwrites. Commands that name a private folder are refused, but a command can reach anything you can, so read it before you allow it.
-- Websites open in your Edge profile set by `EDGE_PROFILE` (default `Default`), never a private one.
+- Websites open in your Edge profile set by `EDGE_PROFILE` (default `Default`), never a private one. To play a song or video, LuckyLook itself looks up YouTube's top result for what you asked (after your Allow, without cookies or any account); that search is the one thing it sends out.
 - **Keep things out:** tray menu › **Private folders and windows…** (or copy `local_settings.example.py` to `local_settings.py`). List folders LuckyLook must never touch (for example a browser profile), and window titles to black out whenever it looks at your screen. To keep browsing history out entirely, add `HISTORY = []`. Then tray menu › Restart LuckyLook.
 
 ## Settings

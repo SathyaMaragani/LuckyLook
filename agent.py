@@ -574,10 +574,14 @@ def close_app(name: str, force: bool = False):
             "asking to save, or have no window. force=True ends it, but only if the user says so")
 
 
-def open_website(url: str = "", search: str = ""):
+def open_website(url: str = "", search: str = "", play: bool = False):
     """Open a website in Microsoft Edge, or search on it. url: an address ("youtube.com", "https://…") or a site name.
     search: what to look for there: url "youtube", search "Shape of You Ed Sheeran" opens YouTube's results for that
-    song. With only search, it searches the web. Asks the user first."""
+    song. play=True (with url "youtube"): plays the top result straight away: for "play …", "put on …".
+    With only search, it searches the web. Asks the user first."""
+    play = play and bool(search)
+    if play:
+        url = "youtube"
     if search:
         site = next((k for k in SEARCH if k in url.lower()), "") if url else "bing"
         target = SEARCH[site] + quote_plus(search) if site else SEARCH["bing"] + quote_plus(f"{search} site:{url}")
@@ -589,10 +593,29 @@ def open_website(url: str = "", search: str = ""):
     profile = os.path.join(os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\User Data"), EDGE_PROFILE)
     if indexer.private(profile):
         return REFUSED
-    if not CONFIRM(f"open {target} in Edge"):
+    if not CONFIRM(f"play the top YouTube result for “{search}” in Edge" if play else f"open {target} in Edge"):
         return NO
+    hit = play and top_video(search)  # after Allow: nothing goes to YouTube before
+    if hit:
+        target = hit[0]
     os.startfile("msedge", arguments=f'--profile-directory="{EDGE_PROFILE}" "{target}"')
-    return f"opened {target}"
+    if hit:
+        return f"playing “{hit[1]}” ({target})"
+    return f"opened {target}" + (" (couldn't read YouTube's results, so they're shown instead of playing one)" if play else "")
+
+
+def top_video(search):
+    """(watch URL, title) of YouTube's first result (ads aren't videoRenderers), or None if its page couldn't be read."""
+    req = urllib.request.Request(SEARCH["youtube"] + quote_plus(search),
+                                 headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            page = r.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    # ponytail: reads the JSON inside YouTube's page; if YouTube changes it, open_website falls back to the results
+    m = re.search(r'"videoRenderer":\{"videoId":"([\w-]{11})".*?"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"', page, re.S)
+    return m and ("https://www.youtube.com/watch?v=" + m[1], json.loads(f'"{m[2]}"'))
 
 
 def remind_me(at: str, text: str):
@@ -690,7 +713,7 @@ Never write paths as markdown links or file:/// URLs.
 You can also open files, apps and websites, close apps, create folders, write and edit files, run commands, move or rename,
 and send things to the Recycle Bin, but only when the user asks for that. Each action asks the user to allow it; if they
 don't, leave it. When asked to make a file, write the whole content with write_file instead of pasting it into your answer.
-To play or find a song or video, open_website youtube with it as the search. remind_me sets reminders.
+To play a song or video, open_website with url youtube, it as the search, and play=True (to just find one: no play). remind_me sets reminders.
 Copy file and folder names exactly as the tools return them. Don't guess what names mean or invent details.
 Be concise. Now: {now:%A %Y-%m-%d %H:%M}. Yesterday was {yesterday:%A %Y-%m-%d}.
 
