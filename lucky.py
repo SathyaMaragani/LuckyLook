@@ -140,6 +140,7 @@ class Popup:
         self.reindex = threading.Event()  # Reindex now, from the tray
         threading.Thread(target=self.hotkey_loop, daemon=True).start()
         r.after(30, self.pump)
+        r.after(5000, self.remind)
 
     # --- background threads (talk to the UI only through self.q) ---
 
@@ -326,6 +327,13 @@ class Popup:
         except queue.Empty:
             pass
         self.root.after(30, self.pump)
+
+    def remind(self):
+        """Every 15 s: reminders that are due (remind_me) pop up as notifications."""
+        if self.tray:
+            for text in agent.due_reminders():
+                self.tray.notify("LuckyLook reminder", text)
+        self.root.after(15000, self.remind)
 
     def quit(self):
         if self.tray:
@@ -676,6 +684,12 @@ class Tray:
 
     def remove(self):
         ctypes.windll.shell32.Shell_NotifyIconW(2, ctypes.byref(self.nid))  # NIM_DELETE
+
+    def notify(self, title, text):
+        """A Windows notification from the tray icon."""
+        self.nid.flags, self.nid.info, self.nid.info_title, self.nid.info_flags = 0x17, text[:255], title[:63], 0x4
+        ctypes.windll.shell32.Shell_NotifyIconW(1, ctypes.byref(self.nid))  # NIM_MODIFY, NIF_INFO: the user's icon
+        self.nid.flags = 0x7  # so re-adding the icon later doesn't show it again
 
     def on_message(self, hwnd, msg, wparam, lparam):
         if msg == WM_TRAY and lparam & 0xFFFF == WM_LBUTTONUP:

@@ -249,6 +249,57 @@ with tempfile.TemporaryDirectory() as tmp:
     assert agent.write_file(str(code), "new").startswith("couldn't") and code.read_text() == long + "\n"
     agent.to_recycle_bin = real_bin
     assert agent.run_tool("write_file", {"path": str(priv / "x.py"), "text": "1"}).startswith("refused")
+    # edit_file: exactly one match, line endings and the old version kept (Recycle Bin stubbed), Deny changes nothing
+    conf = tmp / "conf.py"
+    conf.write_bytes(b"host = 'a'\r\nport = 80\r\nport2 = 80\r\n")
+    agent.to_recycle_bin = lambda p: shutil.copy(p, tmp / "conf.old") and False
+    assert "2 times" in agent.edit_file(str(conf), "= 80", "= 8080") and not (tmp / "conf.old").exists()
+    agent.CONFIRM = lambda text: False
+    assert agent.edit_file(str(conf), "port = 80", "port = 8080") == agent.NO
+    agent.CONFIRM = lambda text: asked.append(text) or True
+    assert agent.run_tool("edit_file", {"path": str(conf), "old": "port = 80\n", "new": "port = 8080\n"}).startswith("changed")
+    assert conf.read_bytes() == b"host = 'a'\r\nport = 8080\r\nport2 = 80\r\n" and (tmp / "conf.old").exists()
+    assert asked[-1].endswith(":\n\n− port = 80\n+ port = 8080\n")
+    agent.to_recycle_bin = real_bin
+    # run_command: shows the command, returns output and exit code, stops slow ones, keeps out of private folders
+    assert agent.run_command("Write-Output (6*7); exit 3") == "exit code 3\n42" and asked[-1] == "run this command:\n\nWrite-Output (6*7); exit 3\n"
+    assert agent.run_command("Get-Item C:\\no-such-thing").startswith("exit code 1\nGet-Item : Cannot find path")
+    agent.RUN_SECONDS = 1
+    assert "stopped" in agent.run_command("Start-Sleep 5")
+    agent.RUN_SECONDS = 120
+    n = len(asked)
+    assert agent.run_command(f'Get-ChildItem "{priv}"').startswith("refused") and len(asked) == n
+    assert agent.run_command("dir $env:LOCALAPPDATA\\x\\profile 6").startswith("refused")
+    # close_app: matches by name, asks, never LuckyLook itself
+    sleeper = __import__("subprocess").Popen(["ping", "-n", "30", "127.0.0.1"], creationflags=agent.NO_WINDOW)
+    assert (("PING.EXE", sleeper.pid) in agent.processes("ping") or ("ping.exe", sleeper.pid) in agent.processes("ping"))
+    assert os.getpid() not in [p for _, p in agent.processes("python")]
+    assert agent.close_app("ping", force=True) == "closed PING.EXE" and sleeper.wait(5) is not None
+    assert asked[-1] == "force-close PING.EXE" and "nothing called" in agent.close_app("no-such-app-xyz")
+    # open_website: YouTube search, plain addresses, only http(s), never a private Edge profile
+    opened = []
+    real_start, agent.os.startfile = os.startfile, lambda *a, **k: opened.append(k["arguments"])
+    assert agent.open_website("youtube", "Shape of You Ed Sheeran") == \
+        "opened https://www.youtube.com/results?search_query=Shape+of+You+Ed+Sheeran"
+    assert opened[-1] == '--profile-directory="Default" "https://www.youtube.com/results?search_query=Shape+of+You+Ed+Sheeran"'
+    assert agent.open_website("github.com/python") == "opened https://github.com/python"
+    assert agent.open_website("", "weather") == "opened https://www.bing.com/search?q=weather"
+    assert agent.open_website("imdb.com", "Dune") == "opened https://www.bing.com/search?q=Dune+site%3Aimdb.com"
+    assert agent.open_website("localhost:3000") == "opened https://localhost:3000"
+    assert agent.open_website("javascript:alert(1)").startswith("only") and agent.open_website("file:///C:/x").startswith("only")
+    real_private, indexer.private = indexer.private, lambda p: p.endswith("Profile 6")
+    agent.EDGE_PROFILE = "Profile 6"
+    assert agent.open_website("youtube.com").startswith("refused") and len(opened) == 5
+    agent.EDGE_PROFILE, indexer.private, agent.os.startfile = "Default", real_private, real_start
+    # remind_me: times in the past refused; due ones come out once, late ones say so
+    agent.REMINDERS = tmp / "reminders.json"
+    assert "already passed" in agent.remind_me("2020-01-01 09:00", "x")
+    soon = datetime.datetime.now() + datetime.timedelta(minutes=5)
+    assert agent.remind_me(f"{soon:%Y-%m-%d %H:%M}", "call the bank").startswith("set for")
+    assert agent.due_reminders() == [] and agent.due_reminders(soon) == ["call the bank"] and agent.due_reminders(soon) == []
+    agent.remind_me(f"{soon:%Y-%m-%d %H:%M}", "stretch")
+    assert agent.due_reminders(soon + datetime.timedelta(hours=1)) == [f"stretch (was due {soon:%Y-%m-%d %H:%M})"]
+    assert "Shutdowns and blue screens:" in agent.system_info("crashes") and agent.system_info("startup") is not None
 
 json.dumps(agent.SCHEMAS)
 # the model fits the PC (models.json): (graphics card GB, RAM GB)

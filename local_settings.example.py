@@ -19,3 +19,6 @@
 
 # The shortcut that opens LuckyLook (also settable from the tray menu: Change hotkey).
 # HOTKEY = "Ctrl+Alt+L"
+
+# The Edge profile LuckyLook opens websites in: its folder name from edge://version, "Profile path" (default "Default").
+# EDGE_PROFILE = "Profile 1"

@@ -1,5 +1,5 @@
-"""LuckyLook brain: a local Ollama model plus tools over this PC. They only look, except remember (memory.md)
-and the actions (open, create, move, recycle), which ask the user first.
+"""LuckyLook brain: a local Ollama model plus tools over this PC. They only look, except remember (memory.md),
+remind_me (reminders.json) and the actions (open, close, write, edit, run, move, recycle), which ask the user first.
 
 Run:  python agent.py "where is my resume?"
 """
@@ -8,6 +8,7 @@ import csv
 import ctypes
 import datetime
 import glob
+import html
 import inspect
 import io
 import json
@@ -19,12 +20,14 @@ import string
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
 import winreg
 from contextlib import closing
 from pathlib import Path
+from urllib.parse import quote_plus
 
 import indexer
 
@@ -80,6 +83,13 @@ HISTORY = [os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\User Data\*\Histor
 # Window titles blacked out in look_at_screen's screenshots (PowerShell -like patterns, e.g. an Edge profile you keep
 # private: "* - Work - Microsoft*"). Set your own in local_settings.py.
 PRIVATE_WINDOWS = []
+# The Edge profile open_website uses: its folder in Edge's User Data ("Default", "Profile 1"; see edge://version).
+# Never a PRIVATE one: without this, Edge would open the page in whichever profile was used last.
+EDGE_PROFILE = "Default"
+RUN_SECONDS = 120  # run_command stops a command after this long
+REMINDERS = HERE / "reminders.json"
+SEARCH = {"youtube": "https://www.youtube.com/results?search_query=", "google": "https://www.google.com/search?q=",
+          "bing": "https://www.bing.com/search?q="}  # open_website searches these directly; other sites via Bing
 
 try:
     from local_settings import *  # noqa: F401,F403  your own settings, never uploaded
@@ -226,7 +236,16 @@ def list_dir(path: str):
 
 def system_info(kind: str):
     """kind: "disk" (free space per drive), "apps" (installed programs), "processes" (running programs by memory),
-    "machine" (Windows version, CPU, GPU, RAM, battery, uptime)."""
+    "machine" (Windows version, CPU, GPU, RAM, battery, uptime), "crashes" (blue screens, sudden shutdowns, app
+    crashes and hangs in the last 14 days: "why did my PC crash"), "startup" (apps that start with Windows)."""
+    if kind == "crashes":
+        lines = '-EA SilentlyContinue | ForEach-Object { "{0:yyyy-MM-dd HH:mm}  {1}" -f $_.TimeCreated, ($_.Message -split "\\r?\\n")[0] }'
+        since = "StartTime=(Get-Date).AddDays(-14)"
+        return powershell(f"'Shutdowns and blue screens:'; Get-WinEvent -FilterHashtable @{{LogName='System'; Id=41,6008,1001; {since}}} "
+                          f"-MaxEvents 20 {lines}; ''; 'App crashes and hangs:'; Get-WinEvent -FilterHashtable "
+                          f"@{{LogName='Application'; Id=1000,1002; {since}}} -MaxEvents 30 {lines}")
+    if kind == "startup":
+        return powershell('Get-CimInstance Win32_StartupCommand | ForEach-Object { "$($_.Name)  ($($_.Location))" }')
     if kind == "disk":
         out = []
         for d in (f"{c}:\\" for c in string.ascii_uppercase):
@@ -253,7 +272,7 @@ def system_info(kind: str):
                           "TotalVisibleMemorySize,FreePhysicalMemory; Get-CimInstance Win32_Processor | fl Name;"
                           "Get-CimInstance Win32_VideoController | fl Name; "
                           "Get-CimInstance Win32_Battery | fl EstimatedChargeRemaining")
-    return 'kind must be "disk", "apps", "processes" or "machine"'
+    return 'kind must be "disk", "apps", "processes", "machine", "crashes" or "startup"'
 
 
 def recent_files(limit: int = 30):
@@ -348,10 +367,15 @@ def browser_history(search: str = "", day: str = "", limit: int = 30):
 
 
 def powershell(cmd):
-    cmd = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + cmd  # keep non-English file names intact
+    return run_powershell(cmd).stdout.strip()
+
+
+def run_powershell(cmd, **kw):
+    # keep non-English file names intact; no progress bars in the output
+    cmd = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $ProgressPreference = 'SilentlyContinue'; " + cmd
     # encoded, so quotes inside cmd reach PowerShell untouched
     return subprocess.run(["powershell", "-NoProfile", "-EncodedCommand", base64.b64encode(cmd.encode("utf-16-le")).decode()],
-                          capture_output=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW).stdout.strip()
+                          capture_output=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW, **kw)
 
 
 def installed_apps():
@@ -386,7 +410,10 @@ def ask_in_terminal(text):
 
 CONFIRM = ask_in_terminal  # ask() swaps in the popup's Allow/Deny
 NO = "NOT DONE. The user clicked Deny, so nothing changed. Say that it was not done because they said no."
-PREVIEW_LINES = 30  # of a file write_file is about to save, shown with Allow/Deny
+REFUSED = ('refused. Tell the user exactly: "You\'ve put that folder off limits for me, so I can\'t look in it." '
+           "Don't give any other reason and don't try another way in.")
+REMIND_LOCK = threading.Lock()  # the popup takes due reminders out while the agent may be adding one
+PREVIEW_LINES = 30  # of a file write_file is about to save (or a change, or a command), shown with Allow/Deny
 RUNS = {".exe", ".bat", ".cmd", ".ps1", ".py", ".pyw", ".vbs", ".js", ".msi", ".lnk", ".reg", ".com", ".scr"}
 
 
@@ -456,17 +483,142 @@ def write_file(path: str, text: str):
     Asks the user first, showing them the text."""
     if os.path.isdir(path):
         return f"{path} is a folder; give the full path of the file"
-    lines = text.splitlines()
-    preview = "\n".join(lines[:PREVIEW_LINES]) + (f"\n… {len(lines) - PREVIEW_LINES} more lines" if len(lines) > PREVIEW_LINES else "")
     old = os.path.exists(path)
     verb = "replace" if old else "create"
-    if not CONFIRM(f"{verb} {path}{' (the old one goes to the Recycle Bin)' if old else ''} with:\n\n{preview}\n"):
+    if not CONFIRM(f"{verb} {path}{' (the old one goes to the Recycle Bin)' if old else ''} with:\n\n{shorten(text)}\n"):
         return NO
     if old and to_recycle_bin(path):
         return "couldn't move the old file to the Recycle Bin, so nothing was written"
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     Path(path).write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
-    return f"{'replaced' if old else 'created'} {path} ({len(lines)} lines)"
+    return f"{'replaced' if old else 'created'} {path} ({len(text.splitlines())} lines)"
+
+
+def shorten(text, prefix=""):
+    lines = text.splitlines() or [""]
+    more = len(lines) - PREVIEW_LINES
+    return "\n".join(prefix + s for s in lines[:PREVIEW_LINES]) + (f"\n… {more} more lines" if more > 0 else "")
+
+
+def edit_file(path: str, old: str, new: str):
+    """Change part of a text file (code, settings, notes): replaces the exact text old with new. old must appear
+    exactly once, so read_file first and copy it exactly, with a line or two around it. For a new file use write_file.
+    The previous version goes to the Recycle Bin. Asks the user first, showing the change."""
+    if not os.path.isfile(path):
+        return "doesn't exist"
+    raw = Path(path).read_bytes()
+    bom = raw.startswith(b"\xef\xbb\xbf")
+    text = raw.decode("utf-8-sig").replace("\r\n", "\n")
+    old, new = old.replace("\r\n", "\n"), new.replace("\r\n", "\n")
+    if not old or text.count(old) != 1:
+        return (f"the text to replace is in the file {text.count(old) if old else 0} times; it must be exactly once. "
+                "read_file and copy it exactly, with more of the lines around it")
+    if not CONFIRM(f"change {path} (the old version goes to the Recycle Bin):\n\n{shorten(old, '− ')}\n{shorten(new, '+ ')}\n"):
+        return NO
+    if to_recycle_bin(path):
+        return "couldn't move the old version to the Recycle Bin, so nothing was changed"
+    with open(path, "w", encoding="utf-8-sig" if bom else "utf-8", newline="\r\n" if b"\r\n" in raw else "\n") as f:
+        f.write(text.replace(old, new))
+    return f"changed {path}"
+
+
+def run_command(command: str):
+    """Run a PowerShell command and get its output: run a script you wrote (python D:\\Code\\hello.py), convert or
+    process files, work something out. Runs in the user's home folder and stops after 2 minutes.
+    Asks the user first, showing the exact command."""
+    low = os.path.normcase(command)
+    if any(f in low or os.path.basename(f) in low for f in indexer.PRIVATE):
+        return REFUSED
+    if not CONFIRM(f"run this command:\n\n{shorten(command)}\n"):
+        return NO
+    try:
+        r = run_powershell(command, cwd=Path.home(), timeout=RUN_SECONDS)
+    except subprocess.TimeoutExpired:
+        return f"still running after {RUN_SECONDS} seconds, so it was stopped"
+    err = r.stderr  # PowerShell sends its errors as XML when run like this: just their text
+    if err.startswith("#< CLIXML"):
+        err = html.unescape("".join(re.findall(r'<S S="Error">(.*?)</S>', err, re.S))).replace("_x000D__x000A_", "\n")
+    return "\n".join(s for s in (f"exit code {r.returncode}", r.stdout.strip(), err.strip()) if s)
+
+
+def processes(name=""):
+    """[(image name, pid)] of running programs whose name contains name, LuckyLook itself left out."""
+    out = subprocess.run(["tasklist", "/fo", "csv", "/nh"], capture_output=True, text=True, creationflags=NO_WINDOW).stdout
+    me = {os.getpid(), os.getppid()}
+    return [(r[0], int(r[1])) for r in csv.reader(io.StringIO(out))
+            if len(r) >= 2 and name.lower() in r[0].lower() and int(r[1]) not in me]
+
+
+def close_app(name: str, force: bool = False):
+    """Close a running app by name ("Chrome", "Word", "Spotify"). It closes the normal way, so it can still ask to save.
+    force=True ends it at once and unsaved work is lost: only when the user says kill it, or it's frozen.
+    If several programs match, it lists them: call again with the exact name. Asks the user first."""
+    procs = processes(name)
+    names = sorted({n for n, _ in procs}, key=str.lower)
+    exact = [n for n in names if n.lower() in (name.lower(), name.lower() + ".exe")]
+    if len(names) > 1 and len(exact) == 1:
+        names, procs = exact, [p for p in procs if p[0] == exact[0]]
+    if not procs:
+        return f"nothing called {name!r} is running"
+    if len(names) > 1:
+        return "several programs match, which one? " + ", ".join(names[:20])
+    if not CONFIRM(f"{'force-close' if force else 'close'} {names[0]}{'' if force else ' (it may ask you to save)'}"):
+        return NO
+    subprocess.run(["taskkill", *(["/f", "/t"] if force else []), *[a for _, p in procs for a in ("/pid", str(p))]],
+                   capture_output=True, creationflags=NO_WINDOW)
+    time.sleep(3)
+    left = {p for _, p in processes(names[0])} & {p for _, p in procs}
+    if not left:
+        return f"closed {names[0]}"
+    return (f"asked {names[0]} to close, but it's still running ({len(left)} of {len(procs)} processes): it may be "
+            "asking to save, or have no window. force=True ends it, but only if the user says so")
+
+
+def open_website(url: str = "", search: str = ""):
+    """Open a website in Microsoft Edge, or search on it. url: an address ("youtube.com", "https://…") or a site name.
+    search: what to look for there: url "youtube", search "Shape of You Ed Sheeran" opens YouTube's results for that
+    song. With only search, it searches the web. Asks the user first."""
+    if search:
+        site = next((k for k in SEARCH if k in url.lower()), "") if url else "bing"
+        target = SEARCH[site] + quote_plus(search) if site else SEARCH["bing"] + quote_plus(f"{search} site:{url}")
+    else:
+        has_scheme = "://" in url or re.match(r"[a-z]+:(?!\d)", url, re.I)  # javascript:…, but not localhost:3000
+        target = url if has_scheme else "https://" + (url if "." in url or ":" in url else url + ".com")
+    if not re.match(r"https?://[^\s\"]+$", target):
+        return "only web addresses (http or https) can be opened"
+    profile = os.path.join(os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\User Data"), EDGE_PROFILE)
+    if indexer.private(profile):
+        return REFUSED
+    if not CONFIRM(f"open {target} in Edge"):
+        return NO
+    os.startfile("msedge", arguments=f'--profile-directory="{EDGE_PROFILE}" "{target}"')
+    return f"opened {target}"
+
+
+def remind_me(at: str, text: str):
+    """Remind the user later with a Windows notification. at: "YYYY-MM-DD HH:MM", worked out from the time now
+    ("in 20 minutes", "at 5 pm", "tomorrow morning" = 09:00). text: what to remind them of."""
+    t = datetime.datetime.strptime(at.strip(), "%Y-%m-%d %H:%M")
+    if t <= datetime.datetime.now():
+        return f"{at} has already passed; work out the time again from now"
+    with REMIND_LOCK:
+        items = json.loads(REMINDERS.read_text(encoding="utf-8")) if REMINDERS.exists() else []
+        REMINDERS.write_text(json.dumps(items + [{"at": f"{t:%Y-%m-%d %H:%M}", "text": text}], ensure_ascii=False),
+                             encoding="utf-8")
+    return f"set for {t:%A %Y-%m-%d %H:%M}. A notification will pop up then, as long as LuckyLook is running."
+
+
+def due_reminders(now=None):
+    """Takes the reminders that are due out of reminders.json: [text]. LuckyLook shows them as notifications."""
+    now = f"{now or datetime.datetime.now():%Y-%m-%d %H:%M}"
+    with REMIND_LOCK:
+        if not REMINDERS.exists():
+            return []
+        items = json.loads(REMINDERS.read_text(encoding="utf-8"))
+        due = [r for r in items if r["at"] <= now]
+        if due:
+            REMINDERS.write_text(json.dumps([r for r in items if r["at"] > now], ensure_ascii=False), encoding="utf-8")
+    return [r["text"] + ("" if r["at"] == now else f" (was due {r['at']})") for r in due]
 
 
 def create_folder(path: str):
@@ -489,8 +641,9 @@ def remember(fact: str):
 
 FUNCS = {f.__name__: f for f in [search_content, search_meaning, find_files, find_folders, read_file, list_dir, system_info,
                                   recent_files, look_at_image, look_at_screen, clipboard, browser_history, remember,
-                                  open_item, open_app, move_item, create_folder, write_file, recycle_item]}
-TYPES = {str: "string", int: "integer", float: "number"}
+                                  remind_me, open_item, open_app, open_website, close_app, move_item, create_folder,
+                                  write_file, edit_file, run_command, recycle_item]}
+TYPES = {str: "string", int: "integer", float: "number", bool: "boolean"}
 
 
 def schema(fn):
@@ -509,9 +662,8 @@ def run_tool(name, args):
     fn = FUNCS.get(name)
     if not fn:
         return f"unknown tool {name}"
-    if any(isinstance(v, str) and k != "text" and indexer.private(v) for k, v in args.items()):  # every path argument
-        return ('refused. Tell the user exactly: "You\'ve put that folder off limits for me, so I can\'t look in it." '
-                "Don't give any other reason and don't try another way in.")
+    if any(isinstance(v, str) and k not in ("text", "old", "new") and indexer.private(v) for k, v in args.items()):
+        return REFUSED  # every path argument (a file's text isn't one)
     try:
         out = str(fn(**args))
     except Exception as e:
@@ -535,9 +687,10 @@ When the user names a folder ("my projects folder"), find_folders it, then list_
 Snippets are partial: when a found file looks relevant, read_file it before answering.
 Write every file or folder path in full inside backticks, like `D:\\Docs\\cv.pdf`, so the user can click it.
 Never write paths as markdown links or file:/// URLs.
-You can also open files and apps, create folders, write files (write_file: a script, code, notes), move or rename, and send
-things to the Recycle Bin, but only when the user asks for that. Each action asks the user to allow it; if they don't, leave it.
-When asked to make a file, write the whole content with write_file instead of pasting it into your answer.
+You can also open files, apps and websites, close apps, create folders, write and edit files, run commands, move or rename,
+and send things to the Recycle Bin, but only when the user asks for that. Each action asks the user to allow it; if they
+don't, leave it. When asked to make a file, write the whole content with write_file instead of pasting it into your answer.
+To play or find a song or video, open_website youtube with it as the search. remind_me sets reminders.
 Copy file and folder names exactly as the tools return them. Don't guess what names mean or invent details.
 Be concise. Now: {now:%A %Y-%m-%d %H:%M}. Yesterday was {yesterday:%A %Y-%m-%d}.
 

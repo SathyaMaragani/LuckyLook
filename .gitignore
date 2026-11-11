@@ -12,3 +12,4 @@ Interlocking*.png
 .venv/
 __pycache__/
 chat.json
+reminders.json
