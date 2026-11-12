@@ -399,7 +399,7 @@ class Lucky:
             self.history = json.loads(CHAT.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             self.history = []
-        self.app, self.app_hwnd, self.shown = None, None, False
+        self.app, self.app_hwnd, self.shown, self.move_timer = None, None, False, None
         self.api = api = Api(self)
         self.popup = webview.create_window("LuckyLook", html=page("popup"), js_api=api, width=POPUP[0], height=POPUP[1],
                                            hidden=True, frameless=True, easy_drag=False, on_top=True,
@@ -602,7 +602,7 @@ class Lucky:
                                          y=y, frameless=True, easy_drag=False, background_color="#1c1c1e",
                                          min_size=(760, 520), hidden=True)
         self.app.events.loaded += self.app_loaded
-        self.app.events.moved += lambda *a: self.frost(self.app) if self.app else None
+        self.app.events.moved += self.app_moved
         self.app.events.closed += self.app_closed
 
     def app_loaded(self):
@@ -618,6 +618,13 @@ class Lucky:
         if len(SCREENSHOTS) > 1:
             window.run_js(f"send({json.dumps(SCREENSHOTS)})")
             SCREENSHOTS = "1"
+
+    def app_moved(self, *_):
+        """The glass catches up once the window has stopped moving (re-blurring on every step of a drag stutters)."""
+        if self.move_timer:
+            self.move_timer.cancel()
+        self.move_timer = threading.Timer(0.25, lambda: self.app and self.frost(self.app))
+        self.move_timer.start()
 
     def app_closed(self):
         self.app = self.app_hwnd = None
@@ -863,6 +870,17 @@ class Api:
             self._l.q.put(("toggle", None))
         self._l.q.put(("app", None))
 
+    def drag(self):
+        """Hands a drag of the app's title area to Windows, which moves the window with the mouse itself."""
+        app = self._l.app
+        if app:
+            from System import Action  # .NET, loaded by pywebview
+
+            def start():
+                u32.ReleaseCapture()
+                u32.PostMessageW(self._l.app_hwnd, 0xA1, 2, 0)  # WM_NCLBUTTONDOWN on HTCAPTION: as if on a title bar
+            app.native.Invoke(Action(start))
+
     def minimize(self):
         if self._l.app:
             self._l.app.minimize()
@@ -1051,5 +1069,7 @@ def already_running():
 
 if __name__ == "__main__":
     if not already_running():
+        # its own taskbar identity and the LuckyLook logo (otherwise Windows shows Python's)
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("LuckyLook.App")
         lucky = Lucky()
-        webview.start(lucky.started, private_mode=True)
+        webview.start(lucky.started, private_mode=True, icon=str(HERE / "assets" / "logo.ico"))

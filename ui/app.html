@@ -6,13 +6,13 @@
 <div id="frost"></div><div id="glow"></div>
 <div class="app">
   <aside class="side">
-    <div class="brand pywebview-drag-region"><img src="LOGO.png" alt="">LuckyLook</div>
+    <div class="brand drag"><img src="LOGO.png" alt="">LuckyLook</div>
     <button class="newchat" id="new"><i class="ic ic-plus"></i>New chat</button>
     <nav id="chats"></nav>
     <div class="side-foot" id="foot">Runs on this PC · nothing leaves it</div>
   </aside>
   <main class="center">
-    <div class="top pywebview-drag-region">
+    <div class="top drag">
       <div class="title" id="title">New chat</div>
       <button class="icon-btn" id="panel" title="Show or hide At a glance"><i class="ic ic-panel"></i></button>
       <button class="icon-btn" id="min" title="Minimise"><i class="ic ic-min"></i></button>
@@ -137,6 +137,10 @@ $("#min").onclick = () => api().minimize();
 $("#close").onclick = () => api().close();
 $("#panel").onclick = () => document.body.classList.toggle("no-panel");
 $("#reindex").onclick = () => { api().reindex(); LL.toast("Reindexing all drives in the background"); };
+// the title areas move the window: Windows does the dragging itself, so it follows the mouse smoothly
+document.addEventListener("mousedown", (e) => {
+  if (e.button === 0 && e.target.closest(".drag") && !e.target.closest("button")) { e.preventDefault(); api().drag(); }
+});
 new MutationObserver(grow).observe(document.body, { attributes: true, attributeFilter: ["class"] });
 
 function ring(id, pct, color) {
