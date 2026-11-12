@@ -387,6 +387,20 @@ with tempfile.TemporaryDirectory() as td:
     lucky.os.startfile, lucky.subprocess.Popen = real_startfile, real_popen
     assert opened == [["explorer", "/select,", sys.executable], str(Path(__file__).parent / "README.md")]
 
+# the Start menu shortcut is put back when it's missing (opening the app), and left alone when it's there
+with tempfile.TemporaryDirectory() as td:
+    lnk = lucky.start_menu_shortcut(Path(td, "it's here"))
+    assert not lnk.exists()  # its folder doesn't exist: nothing to add to
+    Path(td, "it's here").mkdir()
+    lnk = lucky.start_menu_shortcut(Path(td, "it's here"))
+    target = agent.powershell(f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{str(lnk).replace(chr(39), chr(39) * 2)}'); "
+                              "$s.TargetPath + '|' + $s.Arguments + '|' + $s.IconLocation")
+    assert target.split("|")[1].endswith('lucky.py" --app') and target.split("|")[2].endswith("logo.ico,0"), target
+    assert target.split("|")[0].lower().endswith("pythonw.exe")
+    made = lnk.stat().st_mtime_ns
+    lucky.start_menu_shortcut(Path(td, "it's here"))
+    assert lnk.stat().st_mtime_ns == made
+
 # Stop: the answer ends as soon as the next piece of it arrives
 stop = threading.Event()
 stop.set()

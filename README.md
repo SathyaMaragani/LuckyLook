@@ -26,7 +26,7 @@ Everything runs **on your computer** with [Ollama](https://ollama.com). No cloud
 
 The popup is frosted glass in the style of macOS Spotlight, and it opens on the screen your mouse is on. While it works, a soft rainbow glow runs round its edge and each step shows as it happens ("Searching inside your files… 12 found"); answers stream in word by word. Files and folders in answers are chips: click to open, ⋯ or right-click to show in Explorer (programs only ever show in Explorer, a click never runs them). Code has a Copy button, and so does every answer. The strip at the bottom shows the AI model, the index, your next reminder, CPU, memory and battery.
 
-Open the app from the tray menu (**Open LuckyLook app**), the Start menu, or ⤢ in the popup.
+Open the app from the tray menu (**Open LuckyLook app**), the Start menu (type *LuckyLook*; LuckyLook adds itself there when it starts), or ⤢ in the popup.
 
 ## Requirements
 

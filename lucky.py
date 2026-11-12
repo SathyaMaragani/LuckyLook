@@ -419,6 +419,10 @@ class Lucky:
             threading.Thread(target=loop, daemon=True).start()
         if "--app" in sys.argv:
             self.q.put(("app", None))
+        try:
+            start_menu_shortcut()
+        except Exception as e:  # e.g. a locked-down PC: LuckyLook works without it
+            print(f"start menu shortcut: {e}", flush=True)
 
     # --- background threads ---
 
@@ -1053,6 +1057,27 @@ class Tray:
         for cid, _, kind in self.MENU:
             if cid and cid == choice:
                 self.q.put((kind, None))
+
+
+def start_menu_shortcut(folder=None):
+    """Puts LuckyLook in the Start menu (opens the app) if it isn't there yet. install.bat does this too; this covers
+    updating with git pull or the ZIP without running it again. Returns the shortcut's path."""
+    if folder is None:
+        buf = ctypes.create_unicode_buffer(260)
+        ctypes.windll.shell32.SHGetFolderPathW(None, 2, None, 0, buf)  # CSIDL_PROGRAMS: the user's Start menu
+        folder = buf.value
+    lnk = Path(folder) / "LuckyLook.lnk"
+    if not lnk.exists():
+        exe = HERE / ".venv" / "Scripts" / "pythonw.exe"  # LuckyLook's own Python, with no console window
+        if not exe.exists():
+            exe = Path(sys.executable).with_name("pythonw.exe")
+        q = lambda s: "'" + str(s).replace("'", "''") + "'"  # noqa: E731  a PowerShell string
+        agent.powershell(f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut({q(lnk)}); "
+                         f"$s.TargetPath = {q(exe if exe.exists() else sys.executable)}; "
+                         f"$s.Arguments = {q(chr(34) + str(HERE / 'lucky.py') + chr(34) + ' --app')}; "
+                         f"$s.WorkingDirectory = {q(HERE)}; $s.IconLocation = {q(HERE / 'assets' / 'logo.ico')}; "
+                         f"$s.Description = 'LuckyLook: a private AI for this PC'; $s.Save()")
+    return lnk
 
 
 def already_running():
