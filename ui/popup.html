@@ -1,0 +1,103 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>LuckyLook</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="popup">
+<div id="frost"></div><div id="glow"></div>
+<div class="shell">
+  <header class="search">
+    <div class="orb"><img src="LOGO.png" alt=""></div>
+    <input id="q" placeholder="Ask about this PC…" autocomplete="off" spellcheck="false">
+    <button class="icon-btn stop" id="stop" title="Stop"><i class="ic ic-stop"></i></button>
+    <button class="icon-btn" id="expand" title="Open in the LuckyLook app"><i class="ic ic-expand"></i></button>
+    <kbd>esc</kbd>
+  </header>
+  <main id="log" class="log"></main>
+  <footer class="strip">
+    <span class="pill" id="s-model"><span class="led"></span><span>…</span></span>
+    <span class="pill" id="s-index"><i class="ic ic-db"></i><span>…</span></span>
+    <span class="pill hidden" id="s-rem"><i class="ic ic-bell"></i><span></span></span>
+    <span class="grow"></span>
+    <span class="pill" id="s-pc"><i class="ic ic-cpu"></i><span>…</span></span>
+    <span class="pill hidden" id="s-bat"><i class="ic ic-battery"></i><span></span></span>
+  </footer>
+</div>
+<div class="sheet hidden" id="hotkey"><div class="box">
+  <div class="hint">Press the new shortcut, with Ctrl, Alt or Shift</div>
+  <div class="combo" id="combo"></div>
+  <button class="btn primary" id="hk-save">Save and restart</button> <button class="btn" id="hk-cancel">Cancel</button>
+</div></div>
+<script src="chat.js"></script>
+<script>
+const q = $("#q"), log = $("#log");
+const SUGGEST = ["What's eating my disk?", "Play some lofi music", "What was I working on yesterday?", "Did my PC crash recently?"];
+
+function welcome() {
+  const w = el("div", "welcome");
+  w.append(el("b", "", "Ask anything about this PC. "), "It runs here, privately: nothing leaves your computer.");
+  const s = w.appendChild(el("div", "suggest"));
+  for (const t of SUGGEST) s.appendChild(el("button", "", t)).onclick = () => send(t);
+  log.append(w);
+}
+LL.onClear = welcome;
+
+function send(text) {
+  text = text.trim();
+  if (!text || document.body.classList.contains("busy")) return;
+  q.value = "";
+  if (!text.startsWith("/")) LL.begin(text);
+  api().ask("popup", "", text);
+}
+
+q.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") send(q.value);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && $("#hotkey").classList.contains("hidden")) api().hide();
+});
+$("#stop").onclick = () => api().stop();
+$("#expand").onclick = () => api().open_app();
+
+LL.shown = () => { q.focus(); LL.poll(strip); };
+LL.hidden = () => LL.unpoll();
+
+function strip(s) {
+  const m = s.model, led = $("#s-model .led");
+  led.className = "led " + (m.state === "ready" ? "ready" : m.state === "off" ? "off" : "");
+  $("#s-model span:last-child").textContent = m.state === "ready" ? `${m.name} · ${m.vram} GB` : m.state === "asleep" ? `${m.name} · asleep` : "Ollama is off";
+  $("#s-model").title = LL.modelText(m);
+  const i = s.index;
+  $("#s-index span").textContent = i.status ? i.status : `${LL.count(i.files)} files · ${LL.count(i.meaning)} by meaning`;
+  $("#s-index").title = `Last full pass ${LL.ago(i.last)}, next ${LL.until(i.next)}`;
+  $("#s-pc span").textContent = `CPU ${s.cpu}% · RAM ${s.ram.pct}%`;
+  const b = s.battery;
+  $("#s-bat").classList.toggle("hidden", !b);
+  if (b) $("#s-bat span").textContent = `${b.pct}%${b.charging ? " · charging" : ""}`;
+  const r = s.reminders[0];
+  $("#s-rem").classList.toggle("hidden", !r);
+  if (r) $("#s-rem span").textContent = `${r.at.slice(11)} ${r.text}`;
+}
+
+// Change hotkey (from the tray menu): press the keys here, Save writes it to local_settings.py and restarts
+let combo = "";
+LL.hotkeyMode = (current) => { combo = current; $("#combo").textContent = current; $("#hotkey").classList.remove("hidden"); };
+document.addEventListener("keydown", (e) => {
+  if ($("#hotkey").classList.contains("hidden")) return;
+  e.preventDefault();
+  const key = e.code.startsWith("Key") ? e.code.slice(3) : e.code.startsWith("Digit") ? e.code.slice(5) :
+    /^F\d+$/.test(e.code) ? e.code : e.code === "Space" ? "Space" : "";
+  const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift"].filter(Boolean);
+  if (key && mods.length) { combo = [...mods, key].join("+"); $("#combo").textContent = combo; }
+  if (e.key === "Escape") $("#hotkey").classList.add("hidden");
+});
+$("#hk-save").onclick = () => api().set_hotkey(combo).catch((err) => LL.toast(String(err.message || err)));
+$("#hk-cancel").onclick = () => $("#hotkey").classList.add("hidden");
+
+window.addEventListener("pywebviewready", async () => {
+  const turns = await api().history();
+  for (const t of turns) LL.addTurn(t.q, t.html);
+  if (!turns.length) welcome();
+  log.scrollTop = log.scrollHeight;
+});
+</script>
+</body></html>

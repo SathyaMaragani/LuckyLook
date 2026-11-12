@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>LuckyLook tab</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="tab">
+<div class="tabpill"><img src="LOGO.png" alt=""><span>LuckyLook</span></div>
+<script>
+window.LL = { tab: (down) => document.body.classList.toggle("down", down) };
+document.body.addEventListener("mouseenter", () => window.pywebview?.api.tab(true));
+document.body.addEventListener("mouseleave", () => window.pywebview?.api.tab(false));
+document.body.addEventListener("click", () => window.pywebview?.api.toggle());
+</script>
+</body></html>

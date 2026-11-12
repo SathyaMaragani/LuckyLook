@@ -51,6 +51,13 @@ if (-not (OllamaUp)) {
     if (-not (OllamaUp)) { Fail "Ollama didn't start. Open the Ollama app once, then run install.bat again." }
 }
 Write-Host "running"
+# less graphics memory for the conversation (16k words of context: 512 MB -> 272 MB); used from Ollama's next start
+foreach ($kv in @{ OLLAMA_FLASH_ATTENTION = "1"; OLLAMA_KV_CACHE_TYPE = "q8_0" }.GetEnumerator()) {
+    if (-not [Environment]::GetEnvironmentVariable($kv.Key, "User")) {
+        [Environment]::SetEnvironmentVariable($kv.Key, $kv.Value, "User")
+        Write-Host "set $($kv.Key)=$($kv.Value) (takes effect when Ollama next starts)"
+    }
+}
 
 Step "LuckyLook's own Python environment"
 if (-not (Test-Path .venv\Scripts\python.exe)) {
@@ -81,14 +88,20 @@ if (-not (Test-Path me.md)) { Copy-Item me.example.md me.md }
 .venv\Scripts\python test_lucky.py
 if ($LASTEXITCODE) { Fail "The self-check failed (see above). Please open an issue on GitHub with this output." }
 
-if (-not $NoStartup) {
-    Step "Start with Windows"
-    $s = (New-Object -ComObject WScript.Shell).CreateShortcut("$([Environment]::GetFolderPath('Startup'))\LuckyLook.lnk")
+function Shortcut($folder, $arguments) {
+    $s = (New-Object -ComObject WScript.Shell).CreateShortcut("$([Environment]::GetFolderPath($folder))\LuckyLook.lnk")
     $s.TargetPath = "$PWD\.venv\Scripts\pythonw.exe"
-    $s.Arguments = "`"$PWD\lucky.py`""
+    $s.Arguments = "`"$PWD\lucky.py`"$arguments"
     $s.WorkingDirectory = "$PWD"
     $s.IconLocation = "$PWD\assets\logo.ico"
     $s.Save()
+}
+Step "Start menu"
+Shortcut "Programs" " --app"  # opens the LuckyLook app window (starting LuckyLook first if needed)
+Write-Host "added LuckyLook to the Start menu"
+if (-not $NoStartup) {
+    Step "Start with Windows"
+    Shortcut "Startup" ""
     Write-Host "added (remove it any time: Win+R, shell:startup, delete LuckyLook)"
 }
 

@@ -1,0 +1,190 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>LuckyLook app</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="app">
+<div id="frost"></div><div id="glow"></div>
+<div class="app">
+  <aside class="side">
+    <div class="brand pywebview-drag-region"><img src="LOGO.png" alt="">LuckyLook</div>
+    <button class="newchat" id="new"><i class="ic ic-plus"></i>New chat</button>
+    <nav id="chats"></nav>
+    <div class="side-foot" id="foot">Runs on this PC · nothing leaves it</div>
+  </aside>
+  <main class="center">
+    <div class="top pywebview-drag-region">
+      <div class="title" id="title">New chat</div>
+      <button class="icon-btn" id="panel" title="Show or hide At a glance"><i class="ic ic-panel"></i></button>
+      <button class="icon-btn" id="min" title="Minimise"><i class="ic ic-min"></i></button>
+      <button class="icon-btn close" id="close" title="Close"><i class="ic ic-close"></i></button>
+    </div>
+    <div id="log" class="log"></div>
+    <div class="composer-wrap">
+      <div class="composer">
+        <textarea id="q" rows="1" placeholder="Ask anything about this PC…" spellcheck="false"></textarea>
+        <button class="send" id="send" title="Send (Enter)"><i class="ic ic-send"></i><i class="ic ic-stop"></i></button>
+      </div>
+      <div class="hint">Enter to send · Shift+Enter for a new line · every action asks you first</div>
+    </div>
+  </main>
+  <aside class="glance" id="glance">
+    <h3>At a glance</h3>
+    <section class="card">
+      <h4><i class="ic ic-chip"></i>AI model</h4>
+      <div class="big" id="g-model">…</div>
+      <div class="sub" id="g-model-sub"></div>
+    </section>
+    <section class="card">
+      <h4><i class="ic ic-cpu"></i>This PC</h4>
+      <div class="rings">
+        <div class="ringbox"><div class="ring" id="r-cpu"></div><label>CPU</label></div>
+        <div class="ringbox"><div class="ring" id="r-ram"></div><label id="ram-label">Memory</label></div>
+        <div class="ringbox hidden" id="bat-box"><div class="ring" id="r-bat"></div><label id="bat-label">Battery</label></div>
+      </div>
+      <div id="drives" style="margin-top:12px"></div>
+    </section>
+    <section class="card">
+      <h4><i class="ic ic-db"></i>Index</h4>
+      <div class="grid2">
+        <div class="stat"><div class="big" id="i-files">…</div><div class="sub">files</div></div>
+        <div class="stat"><div class="big" id="i-meaning">…</div><div class="sub">searchable by meaning</div></div>
+        <div class="stat"><div class="big" id="i-pics">…</div><div class="sub">pictures</div></div>
+        <div class="stat"><div class="big" id="i-desc">…</div><div class="sub">described</div></div>
+      </div>
+      <div class="sub" id="i-status" style="margin-top:10px"></div>
+      <button class="btn" id="reindex"><i class="ic ic-refresh"></i>Reindex now</button>
+    </section>
+    <section class="card">
+      <h4><i class="ic ic-bell"></i>Reminders</h4>
+      <div id="rems" class="sub">None set. Try “remind me at 5 pm to call the bank”.</div>
+    </section>
+  </aside>
+</div>
+<script src="chat.js"></script>
+<script>
+const q = $("#q"), log = $("#log");
+let chat = "";
+const SUGGEST = ["What's eating my disk?", "Play some lofi music", "Find my resume", "What was I working on yesterday?",
+  "Why is my PC slow?", "Write a Python script that renames photos by date"];
+
+function empty() {
+  const e = el("div", "empty");
+  const img = e.appendChild(el("img"));
+  img.src = $(".brand img").src;
+  e.append(el("h1", "", "What can I find for you?"), el("p", "", "Files, apps, your screen, your PC's health — all answered on this PC."));
+  const s = e.appendChild(el("div", "suggest"));
+  for (const t of SUGGEST) s.appendChild(el("button", "", t)).onclick = () => send(t);
+  log.append(e);
+}
+
+async function chats() {
+  const list = await api().chats(), nav = $("#chats");
+  nav.innerHTML = "";
+  const day = 86400, now = Date.now() / 1000;
+  let group = "";
+  for (const c of list) {
+    const g = now - c.when < day ? "Today" : now - c.when < 7 * day ? "This week" : "Earlier";
+    if (g !== group) nav.append(el("div", "group", (group = g)));
+    const row = nav.appendChild(el("div", "chatrow" + (c.id === chat ? " on" : "")));
+    row.append(el("i", "ic ic-chat"), el("span", "t", c.title));
+    const del = row.appendChild(el("button", "del", ""));
+    del.append(el("i", "ic ic-trash"));
+    del.title = "Delete this chat";
+    del.onclick = async (e) => { e.stopPropagation(); await api().delete(c.id); if (c.id === chat) fresh(); chats(); };
+    row.onclick = () => openChat(c);
+  }
+}
+
+async function openChat(c) {
+  if (document.body.classList.contains("busy")) return;
+  chat = c.id;
+  $("#title").textContent = c.title;
+  log.innerHTML = "";
+  for (const t of await api().load(c.id)) LL.addTurn(t.q, t.html);
+  log.scrollTop = log.scrollHeight;
+  chats();
+}
+
+function fresh() {
+  if (document.body.classList.contains("busy")) return;
+  chat = "";
+  $("#title").textContent = "New chat";
+  log.innerHTML = "";
+  empty();
+  chats();
+  q.focus();
+}
+
+async function send(text) {
+  text = text.trim();
+  if (!text || document.body.classList.contains("busy")) return;
+  q.value = "";
+  grow();
+  if (!chat) $("#title").textContent = text.slice(0, 60);
+  LL.begin(text);
+  const first = !chat;
+  chat = await api().ask("app", chat, text);
+  if (first) chats();
+}
+LL.afterDone = chats;
+
+function grow() { q.style.height = "auto"; q.style.height = Math.min(q.scrollHeight, 160) + "px"; $("#send").disabled = !q.value.trim() && !document.body.classList.contains("busy"); }
+q.addEventListener("input", grow);
+q.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(q.value); } });
+$("#send").onclick = () => document.body.classList.contains("busy") ? api().stop() : send(q.value);
+$("#new").onclick = fresh;
+$("#min").onclick = () => api().minimize();
+$("#close").onclick = () => api().close();
+$("#panel").onclick = () => document.body.classList.toggle("no-panel");
+$("#reindex").onclick = () => { api().reindex(); LL.toast("Reindexing all drives in the background"); };
+new MutationObserver(grow).observe(document.body, { attributes: true, attributeFilter: ["class"] });
+
+function ring(id, pct, color) {
+  const r = 30, c = 2 * Math.PI * r;
+  $(id).innerHTML = `<svg width="70" height="70"><circle class="track" cx="35" cy="35" r="${r}"/>` +
+    `<circle class="val" cx="35" cy="35" r="${r}" stroke="${color}" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - pct / 100)}"/></svg><span>${pct}%</span>`;
+}
+const level = (p) => (p > 90 ? "var(--red)" : p > 75 ? "var(--orange)" : "var(--accent)");
+
+function glance(s) {
+  const m = s.model;
+  $("#g-model").textContent = m.name;
+  $("#g-model-sub").textContent = m.state === "ready" ? `Ready · ${m.vram} GB on the graphics card${m.size > m.vram ? `, ${(m.size - m.vram).toFixed(1)} GB in memory` : ""}` :
+    m.state === "asleep" ? "Asleep · wakes up when you ask (a few seconds)" : "Ollama isn't running";
+  ring("#r-cpu", s.cpu, level(s.cpu));
+  ring("#r-ram", s.ram.pct, level(s.ram.pct));
+  $("#ram-label").textContent = `Memory · ${s.ram.total} GB`;
+  $("#bat-box").classList.toggle("hidden", !s.battery);
+  if (s.battery) {
+    ring("#r-bat", s.battery.pct, s.battery.pct < 20 ? "var(--red)" : "var(--green)");
+    $("#bat-label").textContent = s.battery.charging ? "Charging" : "Battery";
+  }
+  const d = $("#drives");
+  d.innerHTML = "";
+  for (const v of s.drives) {
+    const row = d.appendChild(el("div", "row"));
+    row.append(el("span", "", v.name), el("span", "", `${LL.gb(v.free)} free of ${LL.gb(v.total)}`));
+    const bar = d.appendChild(el("div", "bar")).appendChild(el("i", v.pct > 90 ? "full" : v.pct > 75 ? "warn" : ""));
+    bar.style.width = v.pct + "%";
+  }
+  const i = s.index;
+  $("#i-files").textContent = LL.count(i.files);
+  $("#i-meaning").textContent = LL.count(i.meaning);
+  $("#i-pics").textContent = LL.count(i.pictures);
+  $("#i-desc").textContent = LL.count(i.described);
+  $("#i-status").textContent = i.status || `Last full pass ${LL.ago(i.last)} · next ${LL.until(i.next)}`;
+  const r = $("#rems");
+  if (s.reminders.length) {
+    r.innerHTML = "";
+    r.classList.remove("sub");
+    for (const x of s.reminders) {
+      const row = r.appendChild(el("div", "rem"));
+      row.append(el("time", "", x.at.slice(5).replace("-", "/")), el("span", "", x.text));
+    }
+  }
+  $("#foot").textContent = `${m.name} · runs on this PC · nothing leaves it`;
+}
+
+window.addEventListener("pywebviewready", () => { fresh(); LL.poll(glance); });
+</script>
+</body></html>

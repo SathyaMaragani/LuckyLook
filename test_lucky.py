@@ -7,6 +7,7 @@ import msvcrt
 import os
 import queue
 import shutil
+import sys
 import sqlite3
 import tempfile
 import threading
@@ -144,7 +145,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     def start():
         p = types.SimpleNamespace(q=queue.Queue(), reindex=threading.Event())
-        threading.Thread(target=lucky.Popup.index_loop, args=(p,), daemon=True).start()
+        threading.Thread(target=lucky.Lucky.index_loop, args=(p,), daemon=True).start()
         return p
 
     def passed(p, seconds):
@@ -337,12 +338,62 @@ with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as watched:
     assert str(Path(watched, "fresh.txt")) in w.take(), "the Watcher didn't see a new file"
 indexer.live = real_live
 
-root = lucky.tk.Tk()  # answers show markdown as styles, not symbols
-t = lucky.tk.Text(root)
-t.insert("end", "› q\n## Drives\n- **C:** `78 GB` free\n* 2 ** 3 = 8\n")
-lucky.render_markdown(t, "2.0")
-assert t.get("1.0", "end-1c") == "› q\nDrives\n• C: 78 GB free\n• 2 ** 3 = 8\n", t.get("1.0", "end-1c")
-assert t.get(*t.tag_ranges("code")) == "78 GB" and [t.get(a, b) for a, b in zip(*[iter(t.tag_ranges("bold"))] * 2)] == [
-    "Drives", "C:"]
-root.destroy()
+# answers become safe HTML: nothing the model writes is ever HTML; markdown becomes styles, paths that exist chips
+md = lucky.markdown
+assert md("## Drives\n- **C:** `78 GB` free\n* 2 ** 3 = 8") == \
+    "<h4>Drives</h4><ul><li><b>C:</b> <code>78 GB</code> free</li><li>2 ** 3 = 8</li></ul>"
+assert md('<script>alert(1)</script> <img src=x onerror="api.decide()">') == \
+    "<p>&lt;script&gt;alert(1)&lt;/script&gt; &lt;img src=x onerror=&quot;api.decide()&quot;&gt;</p>"
+assert md("```py\nif a < b:\n    print('<b>')\n```") == \
+    '<div class="code"><button class="copy">Copy</button><pre><code>if a &lt; b:\n    print(&#x27;&lt;b&gt;&#x27;)</code></pre></div>'
+assert md("```\nunclosed <x>") .endswith("<code>unclosed &lt;x&gt;</code></pre></div>")  # still streaming
+assert md("1. one\n2. two\n\n---\n| A | B |\n|---|---|\n| 1 | <2> |") == \
+    "<ol><li>one</li><li>two</li></ol><hr><table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>&lt;2&gt;</td></tr></table>"
+here = str(Path(__file__).parent)
+chip = md(f"see `{here}` and C:\\no\\such.txt")
+assert f'data-path="{here}"' in chip and 'class="ic ic-folder"' in chip and '<span class="path">C:\\no\\such.txt</span>' in chip
+assert 'class="chip"' not in md(f"`{here}`", live=True)  # while streaming: no disk checks yet
+assert md('[x] https://example.com/a?b=1&c="2"') == \
+    '<p>[x] <a href="#" data-url="https://example.com/a?b=1&amp;c=&quot;2&quot;">https://example.com/a?b=1&amp;c=&quot;2&quot;</a></p>'
+assert lucky.result_text("find_files", "a\nb\n") == "2 found" and lucky.result_text("open_item", agent.NO) == "not done"
+assert lucky.step_text("read_file", {"path": "D:\\x\\cv.pdf"}) == ("Reading", "cv.pdf")
+
+# what the pages can call, without any window: chats, Allow/Deny, programs never run from a click
+with tempfile.TemporaryDirectory() as td:
+    real_chats, lucky.CHATS = lucky.CHATS, Path(td)
+    fake = types.SimpleNamespace(q=queue.Queue(), waiting={}, history=[], shown=False)
+    page_api = lucky.Api(fake)
+    (Path(td) / "0123456789ab.json").write_text(json.dumps({"title": "Disk", "messages": [
+        {"role": "user", "content": "free?"}, {"role": "assistant", "content": "**68 GB** <free>"}]}), encoding="utf-8")
+    assert [c["title"] for c in page_api.chats()] == ["Disk"]
+    assert page_api.load("0123456789ab") == [{"q": "free?", "html": "<p><b>68 GB</b> &lt;free&gt;</p>"}]
+    for bad in ("..\\..\\me", "0123456789ab/../x", ""):
+        with contextlib.suppress(ValueError):
+            page_api.load(bad)
+            raise AssertionError(f"chat id {bad!r} was accepted")
+    page_api.delete("0123456789ab")
+    assert page_api.chats() == []
+    lucky.CHATS = real_chats
+    done, answer = threading.Event(), []
+    fake.waiting["c1"] = (done, answer)
+    page_api.decide("c1", True)
+    page_api.decide("c1", False)  # only the first click counts
+    assert done.is_set() and answer == [True]
+    opened = []
+    real_startfile, lucky.os.startfile = os.startfile, opened.append
+    real_popen, lucky.subprocess.Popen = lucky.subprocess.Popen, lambda args, **k: opened.append(args)
+    page_api.open(sys.executable)  # a program: shown in Explorer, never run
+    page_api.open(str(Path(__file__).parent / "README.md"))
+    lucky.os.startfile, lucky.subprocess.Popen = real_startfile, real_popen
+    assert opened == [["explorer", "/select,", sys.executable], str(Path(__file__).parent / "README.md")]
+
+# Stop: the answer ends as soon as the next piece of it arrives
+stop = threading.Event()
+stop.set()
+real_urlopen, agent.urllib.request.urlopen = agent.urllib.request.urlopen, lambda req, timeout: io.BytesIO(
+    b'{"message": {"content": "hi"}}\n')
+with contextlib.suppress(agent.Stopped):
+    agent.ask("q", stop=stop, on_text=lambda t: None)
+    raise AssertionError("Stop didn't stop the answer")
+agent.urllib.request.urlopen = real_urlopen
 print("ok")

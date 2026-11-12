@@ -13,3 +13,4 @@ Interlocking*.png
 __pycache__/
 chat.json
 reminders.json
+chats/

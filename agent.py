@@ -590,18 +590,27 @@ def open_website(url: str = "", search: str = "", play: bool = False):
         target = url if has_scheme else "https://" + (url if "." in url or ":" in url else url + ".com")
     if not re.match(r"https?://[^\s\"]+$", target):
         return "only web addresses (http or https) can be opened"
-    profile = os.path.join(os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\User Data"), EDGE_PROFILE)
-    if indexer.private(profile):
+    if edge_private():
         return REFUSED
     if not CONFIRM(f"play the top YouTube result for “{search}” in Edge" if play else f"open {target} in Edge"):
         return NO
     hit = play and top_video(search)  # after Allow: nothing goes to YouTube before
     if hit:
         target = hit[0]
-    os.startfile("msedge", arguments=f'--profile-directory="{EDGE_PROFILE}" "{target}"')
+    edge(target)
     if hit:
         return f"playing “{hit[1]}” ({target})"
     return f"opened {target}" + (" (couldn't read YouTube's results, so they're shown instead of playing one)" if play else "")
+
+
+def edge_private():
+    return indexer.private(os.path.join(os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\User Data"), EDGE_PROFILE))
+
+
+def edge(url):
+    """Opens a web address in Edge, in EDGE_PROFILE (never a private profile: then nothing opens)."""
+    if re.match(r"https?://[^\s\"]+$", url) and not edge_private():
+        os.startfile("msedge", arguments=f'--profile-directory="{EDGE_PROFILE}" "{url}"')
 
 
 def top_video(search):
@@ -724,10 +733,15 @@ Be concise. Now: {now:%A %Y-%m-%d %H:%M}. Yesterday was {yesterday:%A %Y-%m-%d}.
 {read("memory.md") or "(none yet)"}"""
 
 
+class Stopped(Exception):
+    """The user pressed Stop."""
+
+
 def ask(question, history=(), on_text=lambda s: print(s, end="", flush=True), on_tool=lambda name, args: None,
-        on_confirm=ask_in_terminal):
+        on_confirm=ask_in_terminal, on_result=lambda name, out: None, stop=None):
     """Answers one question, calling tools as needed. history: earlier user/assistant messages. Returns the answer.
-    on_confirm(text) -> bool is asked before any action (open, move, delete)."""
+    on_confirm(text) -> bool is asked before any action (open, move, delete). on_result(name, output) follows each
+    tool. stop: a threading.Event; once set, ask raises Stopped (Ollama stops when the stream is dropped)."""
     global CONFIRM
     CONFIRM = on_confirm
     messages = [{"role": "system", "content": system_prompt()}, *history, {"role": "user", "content": question}]
@@ -740,6 +754,8 @@ def ask(question, history=(), on_text=lambda s: print(s, end="", flush=True), on
         try:
             with urllib.request.urlopen(req, timeout=600) as r:
                 for line in r:
+                    if stop and stop.is_set():
+                        raise Stopped()
                     chunk = json.loads(line)
                     error = chunk.get("error", "")
                     if error:
@@ -769,8 +785,12 @@ def ask(question, history=(), on_text=lambda s: print(s, end="", flush=True), on
             args = fn.get("arguments") or {}
             if isinstance(args, str):
                 args = json.loads(args or "{}")
+            if stop and stop.is_set():
+                raise Stopped()
             on_tool(fn["name"], args)
-            messages.append({"role": "tool", "tool_name": fn["name"], "content": run_tool(fn["name"], args)})
+            out = run_tool(fn["name"], args)
+            on_result(fn["name"], out)
+            messages.append({"role": "tool", "tool_name": fn["name"], "content": out})
     return content + "\n(stopped: too many steps)"
 
 
