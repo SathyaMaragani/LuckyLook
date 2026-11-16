@@ -20,6 +20,7 @@ For longer conversations there's the **LuckyLook app**: your chats on the left, 
 - **Does things, if you allow it:** "open my resume", "start Blender", "close Chrome", "play Shape of You" (plays the top YouTube result in Edge), "make a Taxes 2026 folder", "write a Python script in it that adds up my invoices", "run it", "change the port in config.py to 8080", "move the invoices into it", "delete the old installer". Every action shows **Allow / Deny** first, with the exact command or change, and deleting only ever goes to the Recycle Bin.
 - **Reminders:** "remind me at 5 pm to call the bank" pops up a Windows notification then.
 - **PC controls:** "set the volume to 50%", "mute", "turn it up a bit", "screen brightness 80%" (laptop screens), "next song", "pause the music". These just happen, no Allow needed.
+- **Talk to it:** say **"Hey Lucky"** (or click 🎤) and ask anything, in English, Hindi or Telugu; it can do everything it does when you type. It answers out loud and on screen, or on screen only: the 🔊 / 💬 toggle next to the mic. When a spoken request needs your Allow, it asks "Shall I…?" and you can just say yes or no.
 - **When something's wrong:** "why did my PC crash last night?" (shutdowns, blue screens, app crashes), "what starts with Windows?"
 - **Remembers you:** "remember that I prefer short answers" goes into `memory.md`. Tell it about yourself in `me.md` (tray menu › About me…). Your conversation is still there after a restart; `/new` starts fresh.
 
@@ -87,6 +88,7 @@ The top tab gets out of the way by itself during full-screen videos, games and s
 ## Privacy
 
 - Nothing is sent anywhere. The model, the index (`index.db`) and your notes all stay in this folder.
+- Voice runs on this PC too: Whisper understands you, Piper speaks, and Vosk listens for "Hey Lucky" (`voice-models/`, about 600 MB, downloaded once by `install.bat`). While "Hey Lucky" is on, the microphone stays open and Windows shows its mic icon; nothing is recorded or kept until it hears the phrase. Turn it off in the tray menu (**Listen for "Hey Lucky"**); the 🎤 button still works.
 - It reads file *names* everywhere on your fixed drives, and the *text* of documents and code outside system folders. Secrets files (`.env`, SSH keys, `.pem`/`.key`/`.pfx`, KeePass databases) are never read. OneDrive files that live only in the cloud are not downloaded.
 - It only looks at your screen, clipboard or browser history when you ask a question that needs them. LuckyLook's own windows never appear in screenshots or screen shares (that's also how their glass sees what's behind them).
 - It never changes anything without asking: opening, starting and closing apps, opening websites, creating folders, writing and editing files, running commands, moving and deleting each wait for your **Allow**. It shows you what it will write, change or run first. Deleting goes to the Recycle Bin, writing over or editing a file sends the old version there too, and moving never overwrites. Commands that name a private folder are refused, but a command can reach anything you can, so read it before you allow it.
@@ -95,7 +97,7 @@ The top tab gets out of the way by itself during full-screen videos, games and s
 
 ## Settings
 
-Put overrides in `local_settings.py`: `HOTKEY`, `MODEL`, `ROOTS` (which drives to index), `REINDEX_HOURS`, `LIVE`, `EDGE_PROFILE`, `PRIVATE`, `PRIVATE_WINDOWS`, `HISTORY`. Restart LuckyLook from the tray menu afterwards. Other constants are at the top of each file: `lucky.py` has the look and the re-index timings.
+Put overrides in `local_settings.py`: `HOTKEY`, `MODEL`, `ROOTS` (which drives to index), `REINDEX_HOURS`, `LIVE`, `EDGE_PROFILE`, `PRIVATE`, `PRIVATE_WINDOWS`, `HISTORY`, and for voice `WAKE_WORD`, `WHISPER_MODEL`, `VOICE` (any [Piper voice](https://huggingface.co/rhasspy/piper-voices), e.g. `en_GB-alba-medium`), `SILENCE_SECONDS`. Restart LuckyLook from the tray menu afterwards. Other constants are at the top of each file: `lucky.py` has the look and the re-index timings.
 
 **Memory:** LuckyLook itself uses about 270 MB of RAM (its windows are drawn by Windows' web view), about 400 MB while the app window is open, and around 1% of one CPU core when idle. The AI model uses about 5.5 GB of graphics memory while answering, and Ollama unloads it after 5 minutes without questions. The installer also sets `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0`, which halve the memory the model needs for the conversation (512 → 272 MB at LuckyLook's 16k context); they apply from Ollama's next start.
 
@@ -104,6 +106,7 @@ Put overrides in `local_settings.py`: `HOTKEY`, `MODEL`, `ROOTS` (which drives t
 ## Files
 
 - `lucky.py`: the popup, the app window, the top tab, the hotkey and tray, and keeping the index fresh. Errors go to `lucky.log`.
+- `voice.py`: the microphone, "Hey Lucky", speech to text and text to speech.
 - `ui/`: how the windows look (`style.css`), the conversation (`chat.js`), and the popup, app and tab pages. Plain files, nothing loaded from the internet.
 - `agent.py`: the model and its tools. Also usable from a terminal: `.venv\Scripts\python agent.py "where is my resume?"`
 - `indexer.py`: builds `index.db`. Run it by hand for a folder: `.venv\Scripts\python indexer.py D:\Projects`

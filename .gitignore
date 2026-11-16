@@ -14,3 +14,5 @@ __pycache__/
 chat.json
 reminders.json
 chats/
+prefs.json
+voice-models/

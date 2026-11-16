@@ -22,6 +22,8 @@
     <div class="composer-wrap">
       <div class="composer">
         <textarea id="q" rows="1" placeholder="Ask anything about this PC…" spellcheck="false"></textarea>
+        <button class="icon-btn speak" id="speak" title="Spoken questions: answered with voice + text"><i class="ic ic-speaker"></i></button>
+        <button class="icon-btn mic" id="mic" title="Talk (or say “Hey Lucky”)"><i class="ic ic-mic"></i></button>
         <button class="send" id="send" title="Send (Enter)"><i class="ic ic-send"></i><i class="ic ic-stop"></i></button>
       </div>
       <div class="hint">Enter to send · Shift+Enter for a new line · every action asks you first</div>
@@ -115,7 +117,8 @@ function fresh() {
   q.focus();
 }
 
-async function send(text) {
+const WHERE = "app";
+async function send(text, spoken = false) {
   text = text.trim();
   if (!text || document.body.classList.contains("busy")) return;
   q.value = "";
@@ -123,7 +126,7 @@ async function send(text) {
   if (!chat) $("#title").textContent = text.slice(0, 60);
   LL.begin(text);
   const first = !chat;
-  chat = await api().ask("app", chat, text);
+  chat = await api().ask("app", chat, text, spoken);
   if (first) chats();
 }
 LL.afterDone = chats;

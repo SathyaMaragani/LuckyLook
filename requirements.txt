@@ -1,3 +1,7 @@
 pypdf
 numpy
 pywebview
+faster-whisper
+piper-tts
+vosk
+sounddevice

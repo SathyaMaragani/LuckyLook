@@ -792,6 +792,13 @@ def run_tool(name, args):
 
 # ---------- chat loop ----------
 
+SPOKEN = """
+
+# This question was spoken, and your answer is read aloud
+Answer like a helpful voice assistant: one to three short, natural sentences, no tables, lists or emoji unless asked.
+Still do everything asked with your tools first. Say numbers and file names simply ("72 gigabytes free on C")."""
+
+
 def system_prompt():
     def read(n):
         p = HERE / n
@@ -827,13 +834,14 @@ class Stopped(Exception):
 
 
 def ask(question, history=(), on_text=lambda s: print(s, end="", flush=True), on_tool=lambda name, args: None,
-        on_confirm=ask_in_terminal, on_result=lambda name, out: None, stop=None):
+        on_confirm=ask_in_terminal, on_result=lambda name, out: None, stop=None, spoken=False):
     """Answers one question, calling tools as needed. history: earlier user/assistant messages. Returns the answer.
     on_confirm(text) -> bool is asked before any action (open, move, delete). on_result(name, output) follows each
     tool. stop: a threading.Event; once set, ask raises Stopped (Ollama stops when the stream is dropped)."""
     global CONFIRM
     CONFIRM = on_confirm
-    messages = [{"role": "system", "content": system_prompt()}, *history, {"role": "user", "content": question}]
+    system = system_prompt() + (SPOKEN if spoken else "")
+    messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": question}]
     content, retried = "", False
     for _ in range(MAX_STEPS):
         body = json.dumps({"model": MODEL, "messages": messages, "tools": SCHEMAS, "think": THINK,

@@ -78,12 +78,14 @@ LL.confirm = function (id, html) {
   const row = card.appendChild(el("div", "buttons"));
   const yes = row.appendChild(el("button", "btn primary", "Allow"));
   const no = row.appendChild(el("button", "btn", "Deny"));
-  const decide = (ok) => {
-    api().decide(id, ok);
+  const decide = (ok, said) => {
+    if (!row.isConnected) return;
+    if (!said) api().decide(id, ok);
     row.remove();
-    card.append(el("div", "verdict", ok ? "✓ Allowed" : "Not allowed"));
+    card.append(el("div", "verdict", (ok ? "✓ Allowed" : "Not allowed") + (said ? " (you said so)" : "")));
     turn && (turn.label.textContent = ok ? "Working" : "Thinking");
   };
+  cards[id] = decide;
   yes.onclick = () => decide(true);
   no.onclick = () => decide(false);
   turn.el.insertBefore(card, turn.a);
@@ -120,6 +122,31 @@ LL.fail = function (text) {
   document.body.classList.remove("busy");
   toast(text);
 };
+
+// ---------- voice ----------
+const cards = {};
+LL.decided = (id, ok) => cards[id] && cards[id](ok, true);  // answered "yes" / "no" out loud
+LL.listening = function (on, label) {
+  const q = $("#q");
+  q.dataset.placeholder ??= q.placeholder;
+  document.body.classList.toggle("listening", on);
+  q.placeholder = on ? label || "Listening… speak now" : q.dataset.placeholder;
+  if (!on) LL.level(0);
+};
+LL.level = (x) => document.body.style.setProperty("--level", x);
+LL.speakState = function (on) {
+  const b = $("#speak");
+  if (!b) return;
+  b.classList.toggle("off", !on);
+  b.querySelector("i").className = "ic " + (on ? "ic-speaker" : "ic-speaker-off");
+  b.title = on ? "Spoken questions: answered with voice + text (click for text only)" : "Spoken questions: answered with text only (click for voice + text)";
+};
+window.addEventListener("pywebviewready", () => {
+  api().prefs().then((p) => LL.speakState(p.speak));
+  const mic = $("#mic"), speak = $("#speak");
+  if (mic) mic.onclick = () => api().listen(WHERE);
+  if (speak) speak.onclick = () => api().speak_toggle().then(LL.speakState);
+});
 
 LL.clear = function () { $("#log").innerHTML = ""; LL.onClear && LL.onClear(); };
 LL.frost = function (url) { $("#frost").style.backgroundImage = `url("${url}")`; };

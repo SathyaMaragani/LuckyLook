@@ -9,6 +9,8 @@
     <div class="orb"><img src="LOGO.png" alt=""></div>
     <input id="q" placeholder="Ask about this PC…" autocomplete="off" spellcheck="false">
     <button class="icon-btn stop" id="stop" title="Stop"><i class="ic ic-stop"></i></button>
+    <button class="icon-btn mic" id="mic" title="Talk (or say “Hey Lucky”)"><i class="ic ic-mic"></i></button>
+    <button class="icon-btn speak" id="speak" title="Spoken questions: answered with voice + text"><i class="ic ic-speaker"></i></button>
     <button class="icon-btn" id="expand" title="Open in the LuckyLook app"><i class="ic ic-expand"></i></button>
     <kbd>esc</kbd>
   </header>
@@ -41,19 +43,20 @@ function welcome() {
 }
 LL.onClear = welcome;
 
-function send(text) {
+const WHERE = "popup";
+function send(text, spoken = false) {
   text = text.trim();
   if (!text || document.body.classList.contains("busy")) return;
   q.value = "";
   if (!text.startsWith("/")) LL.begin(text);
-  api().ask("popup", "", text);
+  api().ask("popup", "", text, spoken);
 }
 
 q.addEventListener("keydown", (e) => {
   if (e.key === "Enter") send(q.value);
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && $("#hotkey").classList.contains("hidden")) api().hide();
+  if (e.key === "Escape" && $("#hotkey").classList.contains("hidden")) { api().hush(); api().hide(); }
 });
 $("#stop").onclick = () => api().stop();
 $("#expand").onclick = () => api().open_app();

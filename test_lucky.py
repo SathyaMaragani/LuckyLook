@@ -413,6 +413,41 @@ assert agent.run_tool("pc_controls", {"volume": f"{level}%", "mute": "on" if mut
 assert agent.typed(agent.close_app, {"name": "x", "force": "true"})["force"] is True
 assert agent.typed(agent.pc_controls, {"volume": "0", "brightness": 55.6}) == {"volume": 0, "brightness": 56}
 
+# voice, with recorded speech instead of a microphone (Piper speaks, Whisper and the wake word listen)
+import numpy as np  # noqa: E402
+import voice  # noqa: E402
+assert voice.spoken("## Drives\n- **C:** `72 GB` free 😀\n| a | b |\n|---|---|\n| 1 | 2 |\nSee `D:\\Docs\\cv.pdf` and "
+                    "https://x.com\n```py\nprint(1)\n```") == ("Drives C: 72 GB free The details are in the table on "
+                                                              "screen. See cv.pdf and a link I've put the code on screen.")
+assert voice.strip_wake("Hey Lucky! Hey Lucky, what time is it?") == "what time is it?" and voice.strip_wake("I feel lucky") == "I feel lucky"
+assert [voice.answer_yes(t) for t in ("Yes, go ahead.", "No, don't.", "Hmm.", "Yeah")] == [True, False, None, True]
+quiet = lambda s: (np.random.randn(int(16000 * s)) * 60).astype(np.int16)
+loud = lambda s: (np.sin(np.arange(int(16000 * s)) / 5) * 8000).astype(np.int16)
+blocks = lambda a: (a[i:i + 1600] for i in range(0, len(a), 1600))
+heard = voice.until_silence(blocks(np.concatenate([quiet(1), loud(1.5), quiet(3)])))
+assert heard is not None and 2.4 <= len(heard) / 16000 <= 3.5  # ends ~0.8 s after the sound stops
+assert voice.until_silence(blocks(quiet(8))) is None  # nothing said: gives up
+if (voice.MODELS / "piper").exists():
+    v = voice.Voice(on_wake=lambda: events.append("wake"), on_heard=lambda t: events.append(t))
+
+    def speech(text):  # Piper speaks at 22 kHz; the mic gives 16 kHz
+        a = np.concatenate([c.audio_int16_array for c in v.voice().synthesize(text)])
+        return a[np.linspace(0, len(a) - 1, int(len(a) * 16000 / 22050)).astype(int)]
+    words = set(re.findall(r"\w+", v.transcribe(speech("What is the free space on my C drive?")).lower()))
+    assert {"free", "space", "drive"} <= words, words
+    v.wake_on = True
+    for said, expect in [(speech("Hey Lucky, what time is it?"), ["wake", "what time is it?"]),
+                         (speech("Hello there, how are you?"), [])]:
+        events = []
+        for b in blocks(np.concatenate([quiet(1), said, quiet(2.5)])):
+            v.blocks.put(b)
+            time.sleep(0.1)
+        time.sleep(4)
+        assert events == expect, events
+    v.wake_on = False
+else:
+    print("(voice models not downloaded: skipped the speech tests)")
+
 # Stop: the answer ends as soon as the next piece of it arrives
 stop = threading.Event()
 stop.set()

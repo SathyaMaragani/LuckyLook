@@ -27,16 +27,20 @@ from pathlib import Path
 HERE = Path(__file__).parent
 if sys.stderr is None:  # pythonw has no console
     sys.stdout = sys.stderr = open(HERE / "lucky.log", "a", encoding="utf-8", buffering=1)
+# numpy's maths library reserves memory for a thread per CPU core (500 MB on 16 threads); LuckyLook's sums are tiny
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 import webview  # noqa: E402
 
 import agent  # noqa: E402
 import indexer  # noqa: E402
+import voice  # noqa: E402
 
 MOD_NOREPEAT, WM_HOTKEY = 0x4000, 0x312
 HOTKEY = "Ctrl+Alt+L"  # change it from the tray menu (saved in local_settings.py)
 CHAT = HERE / "chat.json"  # the popup's conversation, so it's still there after a restart
 CHATS = HERE / "chats"  # the app's conversations, one file each
+PREFS = HERE / "prefs.json"  # what the toggles were left at: speak answers, listen for "Hey Lucky"
 REINDEX_HOURS = 6  # a full pass of all drives this often (and from the tray menu: Reindex now)
 LIVE = False  # True: also watch for changes, so a file you save, rename or delete shows up within LIVE_SECONDS.
 LIVE_SECONDS = 5  # Costs a little CPU all the time, noticeable on battery.
@@ -400,6 +404,13 @@ class Lucky:
         except (OSError, ValueError):
             self.history = []
         self.app, self.app_hwnd, self.shown, self.move_timer = None, None, False, None
+        try:
+            self.prefs = {"speak": True, "wake": voice.WAKE_WORD, **json.loads(PREFS.read_text(encoding="utf-8"))}
+        except (OSError, ValueError):
+            self.prefs = {"speak": True, "wake": voice.WAKE_WORD}
+        self.fullscreen, self.listen_where, self.spoken_turn = False, "popup", False
+        self.voice = voice.Voice(on_wake=lambda: self.q.put(("wake", None)), on_heard=self.heard,
+                                 on_level=self.level, paused=lambda: self.fullscreen)
         self.api = api = Api(self)
         self.popup = webview.create_window("LuckyLook", html=page("popup"), js_api=api, width=POPUP[0], height=POPUP[1],
                                            hidden=True, frameless=True, easy_drag=False, on_top=True,
@@ -419,6 +430,8 @@ class Lucky:
             threading.Thread(target=loop, daemon=True).start()
         if "--app" in sys.argv:
             self.q.put(("app", None))
+        if self.prefs["wake"]:
+            self.set_wake(True)
         try:
             start_menu_shortcut()
         except Exception as e:  # e.g. a locked-down PC: LuckyLook works without it
@@ -438,6 +451,7 @@ class Lucky:
             return
         threading.Thread(target=self.index_loop, daemon=True).start()
         self.tray = Tray(self.q)
+        self.tray.ticked = lambda kind: kind == "wake" and self.prefs["wake"]
         msg = wintypes.MSG()
         while u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             if msg.message == WM_HOTKEY:
@@ -505,6 +519,8 @@ class Lucky:
                     self.toggle()
                 elif kind == "widget":
                     self.widget_on = not self.widget_on  # tab_loop moves the tab within a second
+                elif kind == "wake":
+                    self.woken()
                 elif kind == "app":
                     self.open_app()
                 elif kind == "quit":
@@ -535,7 +551,8 @@ class Lucky:
         state = ctypes.c_int()
         while True:
             ctypes.windll.shell32.SHQueryUserNotificationState(ctypes.byref(state))
-            gone = not self.widget_on or state.value in (2, 3, 4)  # full-screen app, full-screen game, presentation
+            self.fullscreen = state.value in (2, 3, 4)  # full-screen app, full-screen game, presentation
+            gone = not self.widget_on or self.fullscreen
             if gone != self.tab_gone or self.tab_at is None:
                 self.tab_gone = gone
                 self.pull_tab(False)
@@ -664,17 +681,19 @@ class Lucky:
 
     # --- answering ---
 
-    def ask(self, where, cid, question):
+    def ask(self, where, cid, question, spoken=False):
         if not self.answering.acquire(blocking=False):
             self.js(where, "LL.fail('LuckyLook is answering in another window. Try again when it’s done.')")
             return
         try:
-            self.answer(where, cid, question)
+            self.answer(where, cid, question, spoken)
         finally:
             self.answering.release()
 
-    def answer(self, where, cid, question):
+    def answer(self, where, cid, question, spoken=False):
         self.stop.clear()
+        self.voice.shut_up()
+        self.spoken_turn = speak = spoken and self.prefs["speak"]
         if where == "popup":
             history = self.history
         else:
@@ -698,7 +717,7 @@ class Lucky:
         note = ""
         try:
             reply = agent.ask(question, history[-KEEP_HISTORY:], on_text=on_text, on_tool=on_tool, on_result=on_result,
-                              on_confirm=lambda t: self.confirm(where, t), stop=self.stop)
+                              on_confirm=lambda t: self.confirm(where, t), stop=self.stop, spoken=speak)
         except agent.Stopped:
             reply, note = text[0].strip() + "\n\n(stopped)", "stopped"
         except Exception as e:
@@ -715,6 +734,8 @@ class Lucky:
                                                      ensure_ascii=False), encoding="utf-8")
         meta = {"seconds": round(time.time() - start, 1), "steps": steps, "note": note}
         self.js(where, f"LL.done({json.dumps(markdown(reply))}, {json.dumps(meta)}, {json.dumps(reply)})")
+        if speak and not note:
+            self.voice.say(reply)
 
     def confirm(self, where, text):
         """Asked by the agent (on its thread) before it changes anything: an Allow/Deny card, then wait for a click."""
@@ -728,12 +749,70 @@ class Lucky:
         if where == "popup" and not self.shown:
             self.q.put(("toggle", None))  # it can't be answered unseen
         self.js(where, f"LL.confirm({json.dumps(cid)}, {json.dumps(card)})")
+        if self.spoken_turn:  # asked by voice: ask by voice too ("yes" / "no"); the card still works
+            threading.Thread(target=self.confirm_by_voice, args=(where, cid, first), daemon=True).start()
         while not done.wait(0.2):
             if self.stop.is_set():
                 answer.append(False)
                 break
         del self.waiting[cid]
         return answer[0]
+
+    def confirm_by_voice(self, where, cid, what):
+        self.voice.say(f"Shall I {what.strip().rstrip(':')}?", wait=True)
+        if cid not in self.waiting:
+            return  # clicked meanwhile
+        self.listen_where = where
+        self.js(where, "LL.listening(true)")
+        ok = voice.answer_yes(self.voice.record(give_up=5))
+        self.js(where, "LL.listening(false)")
+        if ok is not None and cid in self.waiting:
+            self.api.decide(cid, ok)
+            self.js(where, f"LL.decided({json.dumps(cid)}, {'true' if ok else 'false'})")
+
+    # --- voice ---
+
+    def woken(self):
+        """Heard "Hey Lucky": the popup opens and listens (voice.py is already recording the request)."""
+        self.listen_where = "popup"
+        if not self.shown:
+            self.toggle()
+        self.voice.chime()
+        self.popup.run_js("LL.listening(true)")
+
+    def listen(self, where):
+        """The mic button: record one request, then ask it (a second click while listening stops)."""
+        if self.voice.recording is not None:
+            self.voice.cancel()
+            return
+        self.listen_where = where
+        self.js(where, "LL.listening(true)")
+        try:
+            text = self.voice.record()
+        except Exception as e:  # no microphone, or the voice models aren't downloaded
+            print(f"voice: {e!r}", flush=True)
+            self.js(where, f"LL.listening(false); LL.toast({json.dumps('Voice isn’t working: ' + str(e)[:120])})")
+            return
+        self.heard(text)
+
+    def heard(self, text):
+        where = self.listen_where
+        if text:
+            self.js(where, f"LL.listening(false); send({json.dumps(text)}, true)")
+        else:
+            self.js(where, "LL.listening(false); LL.toast('Didn’t catch that.')")
+
+    def level(self, x):
+        self.js(self.listen_where, "LL.listening(true, 'Understanding…')" if x < 0 else f"LL.level({x:.2f})")
+
+    def set_wake(self, on):
+        self.prefs["wake"] = on
+        save_prefs(self.prefs)
+        try:
+            self.voice.wake(on)
+        except Exception as e:  # no microphone, or the models aren't downloaded: LuckyLook works without it
+            print(f"wake word: {e!r}", flush=True)
+            self.prefs["wake"] = False
 
     def stats(self):
         now = time.time()
@@ -797,7 +876,7 @@ class Api:
     def __init__(self, lucky):
         self._l = lucky
 
-    def ask(self, where, cid, text):
+    def ask(self, where, cid, text, spoken=False):
         """Returns the chat's id (a new one for the app's first question)."""
         text = (text or "").strip()
         if where == "popup" and text in ("/new", "/widget", "/quit"):
@@ -812,11 +891,31 @@ class Api:
             return cid
         if where == "app" and not cid:
             cid = uuid.uuid4().hex[:12]
-        threading.Thread(target=self._l.ask, args=(where, cid, text), daemon=True).start()
+        threading.Thread(target=self._l.ask, args=(where, cid, text, bool(spoken)), daemon=True).start()
         return cid
 
     def stop(self):
         self._l.stop.set()
+        self._l.voice.shut_up()
+        self._l.voice.cancel()
+
+    def listen(self, where):
+        threading.Thread(target=self._l.listen, args=(where,), daemon=True).start()
+
+    def prefs(self):
+        return self._l.prefs
+
+    def speak_toggle(self):
+        """Answers to spoken questions: voice + text, or text only. Returns the new setting."""
+        p = self._l.prefs
+        p["speak"] = not p["speak"]
+        save_prefs(p)
+        if not p["speak"]:
+            self._l.voice.shut_up()
+        return p["speak"]
+
+    def hush(self):
+        self._l.voice.shut_up()
 
     def decide(self, cid, ok):
         done, answer = self._l.waiting.get(cid, (None, None))
@@ -902,6 +1001,10 @@ class Api:
         self._l.q.put(("restart", None))
 
 
+def save_prefs(prefs):
+    PREFS.write_text(json.dumps(prefs), encoding="utf-8")
+
+
 def set_clipboard(text):
     k, H = ctypes.windll.kernel32, ctypes.c_void_p
     k.GlobalAlloc.restype = k.GlobalLock.restype = H
@@ -926,6 +1029,7 @@ SETTINGS = {  # tray menu choices that the pump thread carries out
     "hotkey": Lucky.change_hotkey,
     "restart": Lucky.restart,
     "reindex": lambda p: p.reindex.set(),  # index_loop starts a full pass within a few seconds
+    "wake": lambda p: p.set_wake(not p.prefs["wake"]),
 }
 
 
@@ -994,6 +1098,7 @@ class Tray:
     """LuckyLook's icon in the system tray. Click: open or close the popup. Right-click: a menu.
     Runs on the hotkey thread (its message loop delivers the clicks) and talks to the rest only through q."""
     MENU = [(1, f"Open LuckyLook\t{HOTKEY}", "toggle"), (9, "Open LuckyLook app", "app"),
+            (10, 'Listen for "Hey Lucky"', "wake"),
             (2, "Show or hide the top tab", "widget"), (0, None, None),
             (8, "Reindex now", "reindex"), (4, "About me…", "aboutme"), (5, "Private folders and windows…", "private"),
             (6, "Change hotkey…", "hotkey"), (7, "Restart LuckyLook (applies settings)", "restart"), (0, None, None),
@@ -1012,6 +1117,7 @@ class Tray:
         u32.TrackPopupMenu.argtypes = [H, wintypes.UINT, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, H]
         u32.DestroyMenu.argtypes = [H]
         self.q = q
+        self.ticked = lambda kind: False  # Lucky sets this: which menu items show a tick
         self.proc = WNDPROC(self.on_message)  # kept alive: Windows calls it as long as the window exists
         self.explorer_restarted = u32.RegisterWindowMessageW("TaskbarCreated")  # before the window: it gets messages at once
         u32.RegisterClassW(ctypes.byref(WNDCLASSW(proc=self.proc, class_name="LuckyLookTray")))
@@ -1048,7 +1154,8 @@ class Tray:
     def menu(self):
         m = u32.CreatePopupMenu()
         for cid, text, _ in self.MENU:
-            u32.AppendMenuW(m, 0x800 if not cid else 0, cid, text)  # 0x800: separator
+            ticked = 0x8 if cid and self.ticked(kind) else 0  # MF_CHECKED
+            u32.AppendMenuW(m, 0x800 if not cid else ticked, cid, text)  # 0x800: separator
         pt = wintypes.POINT()
         u32.GetCursorPos(ctypes.byref(pt))
         u32.SetForegroundWindow(self.hwnd)  # else the menu doesn't close when you click elsewhere

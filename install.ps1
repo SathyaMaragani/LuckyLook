@@ -83,6 +83,11 @@ foreach ($model in (.venv\Scripts\python -c "import agent, indexer; print(agent.
     }
 }
 
+Step "Voice (speech to text, text to speech, the wake word)"
+# all three run on this PC; only this download goes online. Voice is optional: LuckyLook works without it.
+.venv\Scripts\python -c "import voice; voice.download()"
+if ($LASTEXITCODE) { Write-Host "Couldn't download the voice models (needs internet); everything else works. Run install.bat again later." -ForegroundColor Yellow }
+
 Step "Self-check"
 if (-not (Test-Path me.md)) { Copy-Item me.example.md me.md }
 .venv\Scripts\python test_lucky.py
