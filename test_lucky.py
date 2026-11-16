@@ -427,6 +427,9 @@ assert not agent.same_person("Yeshwanth", "Saved Messages") and not agent.same_p
 assert not agent.same_person("Ravi", "") and not agent.same_person("Ravi Teja", "Ravi")
 assert agent.send_message("x", "y", app="signal") == "can send on Telegram and WhatsApp only"
 assert agent.call("x", app="telegram").startswith("can call on WhatsApp only")
+real_keys, agent.keys = agent.keys, lambda *p: (_ for _ in ()).throw(AssertionError("typed into the wrong window"))
+assert agent.keys_to(1, "Hi", 0x0D) is False  # window 1 isn't in front: nothing is typed
+agent.keys = real_keys
 assert agent.schema(agent.call)["function"]["parameters"]["properties"]["video"] == {"type": "boolean"}
 assert lucky.step_text("call", {"to": "Yeshwanth"}) == ("Calling", "Yeshwanth")
 assert set(agent.CHAT_APPS) == {"telegram", "whatsapp"} and agent.schema(agent.send_message)["function"]["parameters"][

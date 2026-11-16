@@ -308,24 +308,28 @@ def look_at_screen(question: str = ""):
 
 
 def look_at_window(hwnd, question):
-    """Asks the model about one window (hwnd), or the whole screen (None). Private windows are blacked out."""
+    """Asks the model about one window (hwnd: just that window's own picture, even if other windows cover it), or
+    the whole screen (None: private windows are blacked out)."""
     png = Path(tempfile.gettempdir()) / "luckylook_screen.png"
-    pats = ",".join("'" + p.replace("'", "''") + "'" for p in PRIVATE_WINDOWS)  # as a PowerShell list
-    area = ("$r = [Windows.Automation.AutomationElement]::FromHandle([IntPtr]%d).Current.BoundingRectangle; "
-            "$b = New-Object Drawing.Rectangle ([int]$r.X), ([int]$r.Y), ([int]$r.Width), ([int]$r.Height); " % hwnd
-            if hwnd else "$b = [Windows.Forms.Screen]::PrimaryScreen.Bounds; ")
-    powershell('Add-Type -Name Dpi -Namespace W -MemberDefinition \'[DllImport("user32.dll")] public static extern '
-               "bool SetProcessDPIAware();'; [W.Dpi]::SetProcessDPIAware() | Out-Null; "  # else it grabs a scaled-down corner
-               "Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes; "
-               f"{area}$i = New-Object Drawing.Bitmap $b.Width, $b.Height; "
-               "$g = [Drawing.Graphics]::FromImage($i); $g.CopyFromScreen($b.Location, [Drawing.Point]::Empty, $b.Size); "
-               "$all = [Windows.Automation.AutomationElement]::RootElement.FindAll('Children', "
-               "[Windows.Automation.Condition]::TrueCondition); foreach ($w in $all) { "
-               f"$n = $w.Current.Name; if (@({pats}) | Where-Object {{ $n -like $_ }}) {{ "
-               "$r = $w.Current.BoundingRectangle; if (-not $r.IsEmpty) { "
-               "$g.FillRectangle([Drawing.Brushes]::Black, [int]$r.X - $b.X, [int]$r.Y - $b.Y, [int]$r.Width, "
-               "[int]$r.Height) } } }; "  # where the private window is, within what was captured
-               f"$i.Save('{png}')")
+    dpi = ('Add-Type -Name Dpi -Namespace W -MemberDefinition \'[DllImport("user32.dll")] public static extern '
+           "bool SetProcessDPIAware(); [DllImport(\"user32.dll\")] public static extern bool PrintWindow(IntPtr h, "
+           "IntPtr dc, uint flags);'; [W.Dpi]::SetProcessDPIAware() | Out-Null; "  # else it grabs a scaled-down corner
+           "Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes; ")
+    if hwnd:  # PrintWindow: the window draws itself, so whatever is on top of it on screen doesn't get in
+        powershell(dpi + f"$r = [Windows.Automation.AutomationElement]::FromHandle([IntPtr]{hwnd}).Current.BoundingRectangle; "
+                   "$i = New-Object Drawing.Bitmap ([int]$r.Width), ([int]$r.Height); $g = [Drawing.Graphics]::FromImage($i); "
+                   f"$dc = $g.GetHdc(); [W.Dpi]::PrintWindow([IntPtr]{hwnd}, $dc, 2) | Out-Null; $g.ReleaseHdc($dc); "
+                   f"$i.Save('{png}')")  # 2: PW_RENDERFULLCONTENT, so apps drawn by the graphics card come out too
+    else:
+        pats = ",".join("'" + p.replace("'", "''") + "'" for p in PRIVATE_WINDOWS)  # as a PowerShell list
+        powershell(dpi + "$b = [Windows.Forms.Screen]::PrimaryScreen.Bounds; $i = New-Object Drawing.Bitmap $b.Width, $b.Height; "
+                   "$g = [Drawing.Graphics]::FromImage($i); $g.CopyFromScreen($b.Location, [Drawing.Point]::Empty, $b.Size); "
+                   "$all = [Windows.Automation.AutomationElement]::RootElement.FindAll('Children', "
+                   "[Windows.Automation.Condition]::TrueCondition); foreach ($w in $all) { "
+                   f"$n = $w.Current.Name; if (@({pats}) | Where-Object {{ $n -like $_ }}) {{ "
+                   "$r = $w.Current.BoundingRectangle; if (-not $r.IsEmpty) { "
+                   "$g.FillRectangle([Drawing.Brushes]::Black, [int]$r.X, [int]$r.Y, [int]$r.Width, [int]$r.Height) } } }; "
+                   f"$i.Save('{png}')")
     try:
         return look_at_image(str(png), question)
     finally:
@@ -732,6 +736,16 @@ def keys(*presses):
     ctypes.windll.user32.SendInput(len(events), arr, ctypes.sizeof(INPUT))
 
 
+def keys_to(h, *presses):
+    """keys(), but only while window h is the one in front: if the user clicks elsewhere meanwhile it stops (False),
+    so nothing gets typed into the wrong window."""
+    for p in presses:
+        if ctypes.windll.user32.GetForegroundWindow() != h:
+            return False
+        keys(p)
+    return True
+
+
 def app_window(exe):
     """The biggest visible window of a running program (by its .exe name), or None."""
     u, found = ctypes.windll.user32, []
@@ -808,7 +822,10 @@ def send_message(to: str, text: str, app: str = "telegram"):
     if not to_front(h):  # clicking Allow put LuckyLook in front
         return f"couldn't bring {name} back to the front, so nothing was sent"
     time.sleep(0.3)
-    keys(text, 0x0D)
+    if not keys_to(h, text):
+        return f"you switched to another window, so nothing was sent"
+    if not keys_to(h, 0x0D):  # typed but not sent: it's left in the box, not sent anywhere else
+        return f"you switched to another window before it was sent; the message is typed in {name}, not sent"
     return f"sent to {shown} on {name}"
 
 
@@ -859,12 +876,16 @@ def open_chat(a, to):
         time.sleep(3)  # its chat list loads
     if not to_front(h):
         return f"couldn't bring {name} to the front"
+    moved = f"you switched to another window while {name} was being used, so it stopped"
     for attempt in range(2):  # now and then the chat hasn't opened yet when the screen is read: search once more
-        keys(*a["search"])
+        if not keys_to(h, *a["search"]):
+            return moved
         time.sleep(0.5)
-        keys((0x11, 0x41), to)  # Ctrl+A over anything typed before, then the name
+        if not keys_to(h, (0x11, 0x41), to):  # Ctrl+A over anything typed before, then the name
+            return moved
         time.sleep(1.5 + attempt)  # results appear
-        keys(0x0D)  # open the first result
+        if not keys_to(h, 0x0D):  # open the first result
+            return moved
         time.sleep(1.5 + attempt)
         shown = look_at_window(h, f"This is {name} Desktop. Which chat is open: what name is shown at the top of the "
                                   "conversation? Reply with only that name, or NONE if no conversation is open.")
@@ -872,7 +893,7 @@ def open_chat(a, to):
         if shown.upper() != "NONE":
             break
     if shown.upper() == "NONE" or not same_person(to, shown):
-        keys(0x1B)
+        keys_to(h, 0x1B)
         return f"couldn't find a chat with {to!r} in {name} (the first match was {shown!r})"
     return h, shown
 
