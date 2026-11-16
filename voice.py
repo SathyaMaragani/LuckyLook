@@ -70,6 +70,17 @@ def spoken(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
+def people():
+    """The names under a "People" heading in me.md ("- Yeshwanth (college friend)" -> Yeshwanth): Whisper is told to
+    expect them, so it spells them right."""
+    try:
+        text = (HERE / "me.md").read_text(encoding="utf-8")
+    except OSError:
+        return []
+    m = re.search(r"(?ims)^#+\s*people\b[^\n]*\n(.*?)(?=^#|\Z)", text)
+    return [n.strip() for n in re.findall(r"(?m)^\s*[-*]\s*([^:(\-–—\n]+)", m[1])] if m else []
+
+
 def sentences(text):
     return [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
 
@@ -257,7 +268,9 @@ class Voice:
             model = self.whisper
         if audio.dtype == np.int16:
             audio = audio.astype(np.float32) / 32768
-        segments, _ = model.transcribe(audio, beam_size=1, vad_filter=True)
+        names = people()
+        segments, _ = model.transcribe(audio, beam_size=1, vad_filter=True,
+                                       initial_prompt=f"Hi. Names: {', '.join(names)}." if names else None)
         return " ".join(s.text.strip() for s in segments).strip()
 
     def unload_loop(self):

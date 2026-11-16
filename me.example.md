@@ -3,3 +3,7 @@ Name:
 What I do:
 Where my important stuff lives (e.g. projects in D:\Projects):
 How I like answers (e.g. short, bullet points):
+
+## People
+<!-- one name per line, spelled as in Telegram/your contacts, so voice understands them and messages find them -->
+- 

@@ -421,6 +421,22 @@ assert voice.spoken("## Drives\n- **C:** `72 GB` free 😀\n| a | b |\n|---|---|
                                                               "screen. See cv.pdf and a link I've put the code on screen.")
 assert voice.strip_wake("Hey Lucky! Hey Lucky, what time is it?") == "what time is it?" and voice.strip_wake("I feel lucky") == "I feel lucky"
 assert [voice.answer_yes(t) for t in ("Yes, go ahead.", "No, don't.", "Hmm.", "Yeah")] == [True, False, None, True]
+# Telegram: only the right person's chat counts; names in me.md's People list are hints for listening
+assert agent.same_person("Yeshwanth", "Yeshwanth Kumar") and agent.same_person("Yeshwanth", "Yashwanth")
+assert not agent.same_person("Yeshwanth", "Saved Messages") and not agent.same_person("Ishwant", "Yeshwanth")
+assert not agent.same_person("Ravi", "") and not agent.same_person("Ravi Teja", "Ravi")
+assert agent.send_message("x", "y", app="signal") == "can send on Telegram and WhatsApp only"
+assert agent.call("x", app="telegram").startswith("can call on WhatsApp only")
+assert agent.schema(agent.call)["function"]["parameters"]["properties"]["video"] == {"type": "boolean"}
+assert lucky.step_text("call", {"to": "Yeshwanth"}) == ("Calling", "Yeshwanth")
+assert set(agent.CHAT_APPS) == {"telegram", "whatsapp"} and agent.schema(agent.send_message)["function"]["parameters"][
+    "required"] == ["to", "text"]
+with tempfile.TemporaryDirectory() as td:
+    real_here, voice.HERE = voice.HERE, Path(td)
+    Path(td, "me.md").write_text("Name: me\n## People\n<!-- hint -->\n- Yeshwanth (college)\n- Ravi Teja: work\n\n## Other\n- not a name\n",
+                                 encoding="utf-8")
+    assert voice.people() == ["Yeshwanth", "Ravi Teja"]
+    voice.HERE = real_here
 quiet = lambda s: (np.random.randn(int(16000 * s)) * 60).astype(np.int16)
 loud = lambda s: (np.sin(np.arange(int(16000 * s)) / 5) * 8000).astype(np.int16)
 blocks = lambda a: (a[i:i + 1600] for i in range(0, len(a), 1600))
@@ -447,6 +463,22 @@ if (voice.MODELS / "piper").exists():
     v.wake_on = False
 else:
     print("(voice models not downloaded: skipped the speech tests)")
+
+# an answer that only announces ("Opening YouTube now!") gets one nudge to actually do it
+replies = iter([b'{"message": {"content": "Opening YouTube now! Let me find a song."}}\n',
+                b'{"message": {"tool_calls": [{"function": {"name": "pc_controls", "arguments": {}}}]}}\n',
+                b'{"message": {"content": "It is at 40%."}}\n'])
+real_urlopen, agent.urllib.request.urlopen = agent.urllib.request.urlopen, lambda req, timeout: io.BytesIO(next(replies))
+real_pc, agent.FUNCS["pc_controls"] = agent.FUNCS["pc_controls"], lambda **a: "volume 40%"
+used = []
+assert agent.ask("volume?", on_text=lambda t: None, on_tool=lambda n, a: used.append(n)) == "It is at 40%." and used == ["pc_controls"]
+replies = iter([b'{"message": {"content": "Let me know if you need anything else."}}\n'])  # not a promise: no nudge
+assert agent.ask("thanks", on_text=lambda t: None).startswith("Let me know")
+agent.urllib.request.urlopen, agent.FUNCS["pc_controls"] = real_urlopen, real_pc
+# what was really done is kept with each saved answer (for the model), and hidden on screen
+assert lucky.record([]) == "\n\n⟨nothing was done this turn⟩" and lucky.record(["send_message: sent"]) == "\n\n⟨done: send_message: sent⟩"
+assert lucky.turns([{"role": "user", "content": "q"}, {"role": "assistant", "content": "**Hi**" + lucky.record(["x: y"])}]) == \
+    [{"q": "q", "html": "<p><b>Hi</b></p>"}]
 
 # Stop: the answer ends as soon as the next piece of it arrives
 stop = threading.Event()

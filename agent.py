@@ -304,21 +304,30 @@ def look_at_image(path: str, question: str = ""):
 def look_at_screen(question: str = ""):
     """See what's on the user's screen right now, for "what does this error mean", "what am I looking at", etc.
     LuckyLook's own popup doesn't show up in it. question: what to find out."""
+    return look_at_window(None, question or "Describe what's on this screen, including any text, errors or dialogs.")
+
+
+def look_at_window(hwnd, question):
+    """Asks the model about one window (hwnd), or the whole screen (None). Private windows are blacked out."""
     png = Path(tempfile.gettempdir()) / "luckylook_screen.png"
     pats = ",".join("'" + p.replace("'", "''") + "'" for p in PRIVATE_WINDOWS)  # as a PowerShell list
+    area = ("$r = [Windows.Automation.AutomationElement]::FromHandle([IntPtr]%d).Current.BoundingRectangle; "
+            "$b = New-Object Drawing.Rectangle ([int]$r.X), ([int]$r.Y), ([int]$r.Width), ([int]$r.Height); " % hwnd
+            if hwnd else "$b = [Windows.Forms.Screen]::PrimaryScreen.Bounds; ")
     powershell('Add-Type -Name Dpi -Namespace W -MemberDefinition \'[DllImport("user32.dll")] public static extern '
                "bool SetProcessDPIAware();'; [W.Dpi]::SetProcessDPIAware() | Out-Null; "  # else it grabs a scaled-down corner
                "Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes; "
-               "$b = [Windows.Forms.Screen]::PrimaryScreen.Bounds; $i = New-Object Drawing.Bitmap $b.Width, $b.Height; "
+               f"{area}$i = New-Object Drawing.Bitmap $b.Width, $b.Height; "
                "$g = [Drawing.Graphics]::FromImage($i); $g.CopyFromScreen($b.Location, [Drawing.Point]::Empty, $b.Size); "
                "$all = [Windows.Automation.AutomationElement]::RootElement.FindAll('Children', "
                "[Windows.Automation.Condition]::TrueCondition); foreach ($w in $all) { "
                f"$n = $w.Current.Name; if (@({pats}) | Where-Object {{ $n -like $_ }}) {{ "
                "$r = $w.Current.BoundingRectangle; if (-not $r.IsEmpty) { "
-               "$g.FillRectangle([Drawing.Brushes]::Black, [int]$r.X, [int]$r.Y, [int]$r.Width, [int]$r.Height) } } }; "
+               "$g.FillRectangle([Drawing.Brushes]::Black, [int]$r.X - $b.X, [int]$r.Y - $b.Y, [int]$r.Width, "
+               "[int]$r.Height) } } }; "  # where the private window is, within what was captured
                f"$i.Save('{png}')")
     try:
-        return look_at_image(str(png), question or "Describe what's on this screen, including any text, errors or dialogs.")
+        return look_at_image(str(png), question)
     finally:
         png.unlink(missing_ok=True)  # screenshots can show private things: don't leave one lying around
 
@@ -699,6 +708,175 @@ def pc_controls(volume: int = -1, mute: str = "", brightness: int = -1, media: s
     return ", ".join(out)
 
 
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [("vk", ctypes.c_ushort), ("scan", ctypes.c_ushort), ("flags", ctypes.c_ulong), ("time", ctypes.c_ulong),
+                ("extra", ctypes.c_size_t)]
+
+
+class INPUT(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_ulong), ("ki", KEYBDINPUT), ("pad", ctypes.c_byte * 8)]  # the union's mouse size
+
+
+def keys(*presses):
+    """Presses keys in the window in front: a str is typed as text (any language), an int is a key (VK_...);
+    a tuple of ints is a combination, like (0x11, 0x46) for Ctrl+F."""
+    events = []
+    for p in presses:
+        if isinstance(p, str):
+            for ch in p:
+                events += [INPUT(1, KEYBDINPUT(0, ord(ch), 4)), INPUT(1, KEYBDINPUT(0, ord(ch), 4 | 2))]  # UNICODE, UP
+        else:
+            combo = p if isinstance(p, tuple) else (p,)
+            events += [INPUT(1, KEYBDINPUT(k, 0, 0)) for k in combo] + [INPUT(1, KEYBDINPUT(k, 0, 2)) for k in combo[::-1]]
+    arr = (INPUT * len(events))(*events)
+    ctypes.windll.user32.SendInput(len(events), arr, ctypes.sizeof(INPUT))
+
+
+def app_window(exe):
+    """The biggest visible window of a running program (by its .exe name), or None."""
+    u, found = ctypes.windll.user32, []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def each(h, _):
+        pid = ctypes.c_ulong()
+        u.GetWindowThreadProcessId(ctypes.c_void_p(h), ctypes.byref(pid))
+        if u.IsWindowVisible(ctypes.c_void_p(h)):
+            proc = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED_INFORMATION
+            name, size = ctypes.create_unicode_buffer(260), ctypes.c_ulong(260)
+            if proc and ctypes.windll.kernel32.QueryFullProcessImageNameW(proc, 0, name, ctypes.byref(size)):
+                if name.value.lower().endswith("\\" + exe.lower()):
+                    r = (ctypes.c_long * 4)()
+                    u.GetWindowRect(ctypes.c_void_p(h), r)
+                    found.append(((r[2] - r[0]) * (r[3] - r[1]), h))
+            ctypes.windll.kernel32.CloseHandle(proc)
+        return True
+    u.EnumWindows(each, 0)
+    return max(found)[1] if found else None
+
+
+def to_front(h):
+    """Brings a window to the front (restoring it if minimised). True if it got there."""
+    u = ctypes.windll.user32
+    r = (ctypes.c_long * 4)()
+    u.GetWindowRect(ctypes.c_void_p(h), r)
+    if u.IsIconic(ctypes.c_void_p(h)) or r[0] <= -10000:  # minimised (some apps park it off-screen instead)
+        u.ShowWindow(ctypes.c_void_p(h), 9)  # SW_RESTORE
+    for _ in range(3):
+        u.keybd_event(0x12, 0, 0, 0)  # an Alt tap: Windows lets a program that just had input bring a window forward
+        u.keybd_event(0x12, 0, 2, 0)
+        u.SetForegroundWindow(ctypes.c_void_p(h))
+        time.sleep(0.3)
+        if u.GetForegroundWindow() == h:
+            return True
+    return False
+
+
+def same_person(asked, shown):
+    """Whether the chat that opened is the person asked for: every word asked appears (allowing for small spelling
+    differences) in the name shown, e.g. "Yeshwanth" in "Yeshwanth Kumar"."""
+    import difflib
+    words = re.findall(r"\w+", shown.lower())
+    return bool(words) and all(any(difflib.SequenceMatcher(None, a, w).ratio() >= 0.8 for w in words)
+                               for a in re.findall(r"\w+", asked.lower()))
+
+
+CHAT_APPS = {  # the desktop apps send_message can type into: their window's program, how to start them, how to search
+    "telegram": {"name": "Telegram", "exe": "Telegram.exe",
+                 "start": os.path.expandvars(r"%APPDATA%\Telegram Desktop\Telegram.exe"),
+                 "search": [0x1B, 0x1B, (0x11, 0x46)]},  # Esc Esc (out of any chat), Ctrl+F: search chats
+    "whatsapp": {"name": "WhatsApp", "exe": "WhatsApp.Root.exe",  # the Microsoft Store app
+                 "start": "shell:AppsFolder\\5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App",
+                 "search": [0x1B, 0x1B, (0x11, 0x46)]},  # Esc Esc, Ctrl+F: "Search or start a new chat"
+}
+
+
+def send_message(to: str, text: str, app: str = "telegram"):
+    """Send a message for the user on Telegram or WhatsApp (app: "telegram" or "whatsapp"), typed into the desktop
+    app like they would: it opens the chat with that person (to: their name as saved there; "Saved Messages" on
+    Telegram), reads the screen to make sure the right chat is open, asks the user, then sends text exactly as the
+    user said it. Asks the user first."""
+    a = CHAT_APPS.get(app.lower().replace(" ", ""))
+    if not a:
+        return f"can send on {' and '.join(c['name'] for c in CHAT_APPS.values())} only"
+    opened = open_chat(a, to)
+    if isinstance(opened, str):
+        return opened + ", so nothing was sent"
+    h, shown = opened
+    name = a["name"]
+    if not CONFIRM(f"send this {name} message to {shown}:\n\n{text}\n"):
+        return NO
+    if not to_front(h):  # clicking Allow put LuckyLook in front
+        return f"couldn't bring {name} back to the front, so nothing was sent"
+    time.sleep(0.3)
+    keys(text, 0x0D)
+    return f"sent to {shown} on {name}"
+
+
+def call(to: str, app: str = "whatsapp", video: bool = False):
+    """Start a WhatsApp voice call (or a video call: video=True) with someone, from WhatsApp Desktop: it opens the
+    chat with that person (to: their name as saved there), reads the screen to make sure the right chat is open,
+    asks the user, then presses the call button. Telegram's call button can't be pressed from outside, so WhatsApp
+    only. Asks the user first."""
+    a = CHAT_APPS.get(app.lower().replace(" ", ""))
+    if a is not CHAT_APPS["whatsapp"]:
+        return "can call on WhatsApp only (Telegram doesn't let other programs press its call button)"
+    opened = open_chat(a, to)
+    if isinstance(opened, str):
+        return opened + ", so no call was made"
+    h, shown = opened
+    kind = "video call" if video else "voice call"
+    import uiautomation as auto  # Windows' UI Automation 3: it can see inside WhatsApp's web-based window
+    auto.Logger.SetLogFile("")  # it would otherwise write @AutomationLog.txt into the current folder
+    with auto.UIAutomationInitializerInThread():
+        button = auto.ControlFromHandle(h).ButtonControl(Name=kind.capitalize(), searchDepth=60)
+        if not button.Exists(3, 0.3):
+            return f"couldn't find WhatsApp's {kind} button, so no call was made"
+        if not CONFIRM(f"start a WhatsApp {kind} with {shown}"):
+            return NO
+        button.GetInvokePattern().Invoke()  # presses it by name: no guessing where it is on screen
+    return f"started a WhatsApp {kind} with {shown}"
+
+
+def open_chat(a, to):
+    """Opens the chat with to in a CHAT_APPS app and checks on screen that it's that person's.
+    Returns (window, the name shown at the top of the chat), or why not as a str."""
+    name = a["name"]
+    h = app_window(a["exe"])
+    if not h:
+        if a["start"].startswith("shell:"):
+            subprocess.Popen(["explorer.exe", a["start"]])
+        elif os.path.exists(a["start"]):
+            os.startfile(a["start"])
+        else:
+            return f"{name} Desktop isn't installed"
+        for _ in range(40):
+            time.sleep(0.5)
+            h = app_window(a["exe"])
+            if h:
+                break
+        else:
+            return f"{name} didn't open"
+        time.sleep(3)  # its chat list loads
+    if not to_front(h):
+        return f"couldn't bring {name} to the front"
+    for attempt in range(2):  # now and then the chat hasn't opened yet when the screen is read: search once more
+        keys(*a["search"])
+        time.sleep(0.5)
+        keys((0x11, 0x41), to)  # Ctrl+A over anything typed before, then the name
+        time.sleep(1.5 + attempt)  # results appear
+        keys(0x0D)  # open the first result
+        time.sleep(1.5 + attempt)
+        shown = look_at_window(h, f"This is {name} Desktop. Which chat is open: what name is shown at the top of the "
+                                  "conversation? Reply with only that name, or NONE if no conversation is open.")
+        shown = shown.strip().strip(" .\"'*")
+        if shown.upper() != "NONE":
+            break
+    if shown.upper() == "NONE" or not same_person(to, shown):
+        keys(0x1B)
+        return f"couldn't find a chat with {to!r} in {name} (the first match was {shown!r})"
+    return h, shown
+
+
 def remind_me(at: str, text: str):
     """Remind the user later with a Windows notification. at: "YYYY-MM-DD HH:MM", worked out from the time now
     ("in 20 minutes", "at 5 pm", "tomorrow morning" = 09:00). text: what to remind them of."""
@@ -745,7 +923,7 @@ def remember(fact: str):
 
 FUNCS = {f.__name__: f for f in [search_content, search_meaning, find_files, find_folders, read_file, list_dir, system_info,
                                   recent_files, look_at_image, look_at_screen, clipboard, browser_history, remember,
-                                  remind_me, pc_controls, open_item, open_app, open_website, close_app, move_item, create_folder,
+                                  remind_me, pc_controls, send_message, call, open_item, open_app, open_website, close_app, move_item, create_folder,
                                   write_file, edit_file, run_command, recycle_item]}
 TYPES = {str: "string", int: "integer", float: "number", bool: "boolean"}
 
@@ -818,6 +996,9 @@ and send things to the Recycle Bin, but only when the user asks for that. Each a
 don't, leave it. When asked to make a file, write the whole content with write_file instead of pasting it into your answer.
 To play a song or video, open_website with url youtube, it as the search, and play=True (to just find one: no play). remind_me sets reminders.
 Volume, mute, screen brightness and play/pause/next track: pc_controls (no Allow needed).
+To message someone on Telegram or WhatsApp: send_message with app "telegram" or "whatsapp" (it opens the app itself;
+don't open_app first; if the user doesn't say which, ask). To call someone: call (WhatsApp; video=True for video). Send the words the
+user asked for exactly ("send Hi to Yeshwanth" -> text "Hi"), and use names as written under People in About the user.
 Only say something is done when the tool's result says so; if it says "error", tell the user it didn't work.
 Copy file and folder names exactly as the tools return them. Don't guess what names mean or invent details.
 Be concise. Now: {now:%A %Y-%m-%d %H:%M}. Yesterday was {yesterday:%A %Y-%m-%d}.
@@ -827,6 +1008,11 @@ Be concise. Now: {now:%A %Y-%m-%d %H:%M}. Yesterday was {yesterday:%A %Y-%m-%d}.
 
 # Remembered facts
 {read("memory.md") or "(none yet)"}"""
+
+
+# an answer that only announces an action ("I'll open...", "Opening YouTube now!") rather than giving a result
+PROMISE = re.compile(r"\b(I'?ll|I will|I'm going to|I am going to|let me (?!know))|^\W*(opening|launching|sending|playing|"
+                     r"starting|searching|setting|turning|closing|writing|creating|running)\b", re.I | re.M)
 
 
 class Stopped(Exception):
@@ -842,7 +1028,7 @@ def ask(question, history=(), on_text=lambda s: print(s, end="", flush=True), on
     CONFIRM = on_confirm
     system = system_prompt() + (SPOKEN if spoken else "")
     messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": question}]
-    content, retried = "", False
+    content, retried, acted, nudged = "", False, False, False
     for _ in range(MAX_STEPS):
         body = json.dumps({"model": MODEL, "messages": messages, "tools": SCHEMAS, "think": THINK,
                            "options": {"num_ctx": NUM_CTX}}).encode()
@@ -875,8 +1061,15 @@ def ask(question, history=(), on_text=lambda s: print(s, end="", flush=True), on
         # thinking must go back in the history, or thinking models answer only inside their thinking next turn
         messages.append({"role": "assistant", "content": content, "thinking": thinking,
                          **({"tool_calls": calls} if calls else {})})
+        if not calls and not acted and not nudged and re.search(PROMISE, content):
+            # it said it would ("Opening YouTube now!", "I'll send that") but called nothing: once, have it do it
+            nudged = True
+            messages.append({"role": "user", "content": "You haven't done it: no tool was called. If this needs a "
+                             "tool, call it now. If it doesn't, give your answer again."})
+            continue
         if not calls:
             return content
+        acted = True
         for call in calls:
             fn = call["function"]
             args = fn.get("arguments") or {}

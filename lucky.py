@@ -203,7 +203,8 @@ STEPS = {  # what each tool is doing, in plain words, and which argument to show
     "remind_me": ("Setting a reminder", "text"), "open_item": ("Opening", "path"), "open_app": ("Starting", "name"),
     "open_website": ("Opening in Edge", "search"), "close_app": ("Closing", "name"), "move_item": ("Moving", "path"),
     "create_folder": ("Creating a folder", "path"), "write_file": ("Writing", "path"), "edit_file": ("Editing", "path"),
-    "run_command": ("Running a command", "command"), "recycle_item": ("Sending to the Recycle Bin", "path"),
+    "run_command": ("Running a command", "command"), "send_message": ("Messaging", "to"), "call": ("Calling", "to"),
+    "pc_controls": ("Changing the PC's controls", ""), "recycle_item": ("Sending to the Recycle Bin", "path"),
 }
 SEARCHES = {"search_content", "search_meaning", "find_files", "find_folders", "list_dir", "recent_files", "browser_history"}
 
@@ -246,9 +247,20 @@ def list_chats():
     return out
 
 
+ACTIONS = {"open_item", "open_app", "open_website", "close_app", "move_item", "create_folder", "write_file", "edit_file",
+           "run_command", "recycle_item", "send_message", "call", "pc_controls", "remind_me", "remember"}
+RECORD = re.compile(r"\n\n⟨(done|nothing was done)[^⟩]*⟩$")
+
+
+def record(done):
+    """A note kept with each saved answer of what was really done, for the model only (the page hides it). Without it,
+    an answer that only said "I'll send that" looked done, and the next question could do it again."""
+    return f"\n\n⟨done: {'; '.join(done)}⟩" if done else "\n\n⟨nothing was done this turn⟩"
+
+
 def turns(messages):
     """Earlier messages as the page shows them: [{q, html}]."""
-    return [{"q": q["content"], "html": markdown(a["content"])} for q, a in zip(messages[::2], messages[1::2])]
+    return [{"q": q["content"], "html": markdown(RECORD.sub("", a["content"]))} for q, a in zip(messages[::2], messages[1::2])]
 
 
 # ---------- stats for the info strip and the At a glance panel ----------
@@ -698,7 +710,7 @@ class Lucky:
             history = self.history
         else:
             history = json.loads(chat_file(cid).read_text(encoding="utf-8"))["messages"] if chat_file(cid).exists() else []
-        text, sent, steps, start = [""], [0.0], [], time.time()
+        text, sent, steps, done, start = [""], [0.0], [], [], time.time()
 
         def on_text(t):
             text[0] += t
@@ -713,6 +725,8 @@ class Lucky:
 
         def on_result(name, out):
             self.js(where, f"LL.stepDone({json.dumps(result_text(name, out))})")
+            if name in ACTIONS:
+                done.append(f"{name}: {out.splitlines()[0][:100] if out else 'done'}")
 
         note = ""
         try:
@@ -723,7 +737,7 @@ class Lucky:
         except Exception as e:
             reply, note = text[0], f"⚠ {e}"
         if reply.strip():
-            history = history + [{"role": "user", "content": question}, {"role": "assistant", "content": reply}]
+            history = history + [{"role": "user", "content": question}, {"role": "assistant", "content": reply + record(done)}]
             if where == "popup":
                 self.history = history[-KEEP_HISTORY:]
                 CHAT.write_text(json.dumps(self.history, ensure_ascii=False), encoding="utf-8")  # back after a restart
