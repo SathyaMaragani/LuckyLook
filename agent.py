@@ -627,6 +627,78 @@ def top_video(search):
     return m and ("https://www.youtube.com/watch?v=" + m[1], json.loads(f'"{m[2]}"'))
 
 
+class GUID(ctypes.Structure):
+    _fields_ = [("data", ctypes.c_byte * 16)]
+
+    def __init__(self, text):
+        super().__init__()
+        ctypes.windll.ole32.CLSIDFromString(text, ctypes.byref(self))
+
+
+def com(obj, index, *args):
+    """Calls method number index of a COM object (its place in the interface, IUnknown's three first)."""
+    vtable = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    kinds = (ctypes.c_void_p if not isinstance(a, ctypes._SimpleCData) else type(a) for a in args)  # byref(): a pointer
+    hr = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, *kinds)(vtable[index])(obj, *args)
+    if hr < 0:
+        raise OSError(f"Windows audio error {hr & 0xFFFFFFFF:#x}")
+
+
+def speakers():
+    """The default speakers' IAudioEndpointVolume (Windows' own volume control). Release it with com(v, 2)."""
+    ctypes.windll.ole32.CoInitialize(None)  # each tool call may come on a new thread
+    enum, device, vol = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
+    hr = ctypes.windll.ole32.CoCreateInstance(ctypes.byref(GUID("{BCDE0395-E52F-467C-8E3D-C4579291692E}")), None, 1,
+                                              ctypes.byref(GUID("{A95664D2-9614-4F35-A746-DE8DB63617E6}")),
+                                              ctypes.byref(enum))
+    if hr < 0:
+        raise OSError("no audio devices")
+    try:
+        com(enum, 4, ctypes.c_int(0), ctypes.c_int(1), ctypes.byref(device))  # GetDefaultAudioEndpoint(render, multimedia)
+        com(device, 3, ctypes.byref(GUID("{5CDF2C82-841E-4546-9722-0CF74078229A}")), ctypes.c_int(1), ctypes.c_void_p(),
+            ctypes.byref(vol))  # Activate IAudioEndpointVolume
+    finally:
+        for o in (device, enum):
+            if o.value:
+                com(o, 2)
+    return vol
+
+
+MEDIA_KEYS = {"play_pause": 0xB3, "next": 0xB0, "previous": 0xB1}
+
+
+def pc_controls(volume: int = -1, mute: str = "", brightness: int = -1, media: str = ""):
+    """The PC's own controls: volume 0-100 (turn it up = the current level + 10), mute "on" or "off", screen brightness
+    0-100 (laptop screens), media "play_pause", "next" or "previous" (music and videos). Leave them all out to read the
+    current volume and brightness. Use this for these, never run_command."""
+    out = []
+    vol = speakers()
+    try:
+        if 0 <= volume <= 100:
+            com(vol, 7, ctypes.c_float(volume / 100), ctypes.c_void_p())  # SetMasterVolumeLevelScalar
+        if volume > 0 and mute not in ("on", "off"):
+            mute = "off"  # like Windows' own slider: choosing a level means you want to hear it
+        if mute in ("on", "off"):
+            com(vol, 14, ctypes.c_int(mute == "on"), ctypes.c_void_p())  # SetMute
+        level, muted = ctypes.c_float(), ctypes.c_int()
+        com(vol, 9, ctypes.byref(level))  # GetMasterVolumeLevelScalar
+        com(vol, 15, ctypes.byref(muted))  # GetMute
+        out.append(f"volume {round(level.value * 100)}%{', muted' if muted.value else ''}")
+    finally:
+        com(vol, 2)
+    if 0 <= brightness <= 100:
+        powershell(f"(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods) | "
+                   f"Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{Timeout=1; Brightness={int(brightness)}}}")
+    if brightness >= 0 or (volume < 0 and not mute and not media):  # asked for it, or for everything (it's slow-ish)
+        now = powershell("(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness).CurrentBrightness")
+        out.append(f"brightness {now}%" if now.strip().isdigit() else "brightness: this screen can't be set from Windows")
+    if media in MEDIA_KEYS:
+        ctypes.windll.user32.keybd_event(MEDIA_KEYS[media], 0, 0, 0)
+        ctypes.windll.user32.keybd_event(MEDIA_KEYS[media], 0, 2, 0)
+        out.append(f"pressed {media.replace('_', '/')}")
+    return ", ".join(out)
+
+
 def remind_me(at: str, text: str):
     """Remind the user later with a Windows notification. at: "YYYY-MM-DD HH:MM", worked out from the time now
     ("in 20 minutes", "at 5 pm", "tomorrow morning" = 09:00). text: what to remind them of."""
@@ -673,7 +745,7 @@ def remember(fact: str):
 
 FUNCS = {f.__name__: f for f in [search_content, search_meaning, find_files, find_folders, read_file, list_dir, system_info,
                                   recent_files, look_at_image, look_at_screen, clipboard, browser_history, remember,
-                                  remind_me, open_item, open_app, open_website, close_app, move_item, create_folder,
+                                  remind_me, pc_controls, open_item, open_app, open_website, close_app, move_item, create_folder,
                                   write_file, edit_file, run_command, recycle_item]}
 TYPES = {str: "string", int: "integer", float: "number", bool: "boolean"}
 
@@ -723,6 +795,7 @@ You can also open files, apps and websites, close apps, create folders, write an
 and send things to the Recycle Bin, but only when the user asks for that. Each action asks the user to allow it; if they
 don't, leave it. When asked to make a file, write the whole content with write_file instead of pasting it into your answer.
 To play a song or video, open_website with url youtube, it as the search, and play=True (to just find one: no play). remind_me sets reminders.
+Volume, mute, screen brightness and play/pause/next track: pc_controls (no Allow needed).
 Copy file and folder names exactly as the tools return them. Don't guess what names mean or invent details.
 Be concise. Now: {now:%A %Y-%m-%d %H:%M}. Yesterday was {yesterday:%A %Y-%m-%d}.
 

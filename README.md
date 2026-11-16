@@ -19,6 +19,7 @@ For longer conversations there's the **LuckyLook app**: your chats on the left, 
 - **What you copied:** text, files, or a Win+Shift+S snip.
 - **Does things, if you allow it:** "open my resume", "start Blender", "close Chrome", "play Shape of You" (plays the top YouTube result in Edge), "make a Taxes 2026 folder", "write a Python script in it that adds up my invoices", "run it", "change the port in config.py to 8080", "move the invoices into it", "delete the old installer". Every action shows **Allow / Deny** first, with the exact command or change, and deleting only ever goes to the Recycle Bin.
 - **Reminders:** "remind me at 5 pm to call the bank" pops up a Windows notification then.
+- **PC controls:** "set the volume to 50%", "mute", "turn it up a bit", "screen brightness 80%" (laptop screens), "next song", "pause the music". These just happen, no Allow needed.
 - **When something's wrong:** "why did my PC crash last night?" (shutdowns, blue screens, app crashes), "what starts with Windows?"
 - **Remembers you:** "remember that I prefer short answers" goes into `memory.md`. Tell it about yourself in `me.md` (tray menu › About me…). Your conversation is still there after a restart; `/new` starts fresh.
 

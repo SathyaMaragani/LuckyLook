@@ -6,6 +6,7 @@ import json
 import msvcrt
 import os
 import queue
+import re
 import shutil
 import sys
 import sqlite3
@@ -400,6 +401,12 @@ with tempfile.TemporaryDirectory() as td:
     made = lnk.stat().st_mtime_ns
     lucky.start_menu_shortcut(Path(td, "it's here"))
     assert lnk.stat().st_mtime_ns == made
+
+# PC controls through Windows' own audio API: set to what they already are, so the test changes nothing you'd hear
+now = agent.pc_controls()
+level, muted = int(re.search(r"volume (\d+)%", now)[1]), ", muted" in now
+assert agent.pc_controls(volume=level, mute="on" if muted else "off") == f"volume {level}%{', muted' if muted else ''}"
+assert "brightness" in now and "brightness" not in agent.pc_controls(mute="on" if muted else "off")
 
 # Stop: the answer ends as soon as the next piece of it arrives
 stop = threading.Event()
