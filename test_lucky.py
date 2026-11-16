@@ -407,6 +407,11 @@ now = agent.pc_controls()
 level, muted = int(re.search(r"volume (\d+)%", now)[1]), ", muted" in now
 assert agent.pc_controls(volume=level, mute="on" if muted else "off") == f"volume {level}%{', muted' if muted else ''}"
 assert "brightness" in now and "brightness" not in agent.pc_controls(mute="on" if muted else "off")
+# numbers the model sends as text work too ("0", "40%"): "set it to 0" once failed with an error
+assert agent.run_tool("pc_controls", {"volume": f"{level}%", "mute": "on" if muted else "off"}) == \
+    f"volume {level}%{', muted' if muted else ''}"
+assert agent.typed(agent.close_app, {"name": "x", "force": "true"})["force"] is True
+assert agent.typed(agent.pc_controls, {"volume": "0", "brightness": 55.6}) == {"volume": 0, "brightness": 56}
 
 # Stop: the answer ends as soon as the next piece of it arrives
 stop = threading.Event()

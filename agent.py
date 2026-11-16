@@ -762,6 +762,21 @@ def schema(fn):
 SCHEMAS = [schema(f) for f in FUNCS.values()]
 
 
+def typed(fn, args):
+    """The model sometimes sends numbers as text ("0", "40%", "40.0") or yes/no as "true": make them what fn takes."""
+    hints = {p.name: p.annotation for p in inspect.signature(fn).parameters.values()}
+    out = dict(args)
+    for k, v in args.items():
+        kind = hints.get(k)
+        if isinstance(v, str) and kind in (int, float):
+            out[k] = kind(float(v.strip().rstrip("%").strip()))
+        elif isinstance(v, float) and kind is int:
+            out[k] = round(v)
+        elif isinstance(v, str) and kind is bool:
+            out[k] = v.strip().lower() in ("true", "yes", "1", "on")
+    return out
+
+
 def run_tool(name, args):
     fn = FUNCS.get(name)
     if not fn:
@@ -769,7 +784,7 @@ def run_tool(name, args):
     if any(isinstance(v, str) and k not in ("text", "old", "new") and indexer.private(v) for k, v in args.items()):
         return REFUSED  # every path argument (a file's text isn't one)
     try:
-        out = str(fn(**args))
+        out = str(fn(**typed(fn, args)))
     except Exception as e:
         out = f"error: {e}"
     return out if len(out) <= MAX_TOOL_CHARS else out[:MAX_TOOL_CHARS] + "\n…[truncated]"
@@ -796,6 +811,7 @@ and send things to the Recycle Bin, but only when the user asks for that. Each a
 don't, leave it. When asked to make a file, write the whole content with write_file instead of pasting it into your answer.
 To play a song or video, open_website with url youtube, it as the search, and play=True (to just find one: no play). remind_me sets reminders.
 Volume, mute, screen brightness and play/pause/next track: pc_controls (no Allow needed).
+Only say something is done when the tool's result says so; if it says "error", tell the user it didn't work.
 Copy file and folder names exactly as the tools return them. Don't guess what names mean or invent details.
 Be concise. Now: {now:%A %Y-%m-%d %H:%M}. Yesterday was {yesterday:%A %Y-%m-%d}.
 
