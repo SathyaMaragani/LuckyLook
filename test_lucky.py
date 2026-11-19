@@ -552,4 +552,28 @@ with contextlib.suppress(agent.Stopped):
     agent.ask("q", stop=stop, on_text=lambda t: None)
     raise AssertionError("Stop didn't stop the answer")
 agent.urllib.request.urlopen = real_urlopen
+
+# the internet: weather, web search and pages answered in the chat (stubbed: no real internet here)
+day = {"date": "2026-11-19", "mintempC": "17", "maxtempC": "28",
+       "hourly": [{"chanceofrain": "6", "weatherDesc": [{"value": "Sunny"}]}, {"chanceofrain": "30", "weatherDesc": [{"value": "Cloudy "}]}]}
+wttr = {"current_condition": [{"temp_C": "28", "FeelsLikeC": "24", "weatherDesc": [{"value": "Partly Cloudy "}], "humidity": "26",
+                               "windspeedKmph": "16", "winddir16Point": "N", "precipMM": "0.0"}],
+        "nearest_area": [{"areaName": [{"value": "Hyderabad"}], "region": [{"value": "Telangana"}], "country": [{"value": "India"}]}],
+        "weather": [day]}
+real_fetch, fetched = agent.fetch, []
+agent.fetch = lambda url, timeout=15: fetched.append(url) or json.dumps(wttr)
+out = agent.weather("Hyderabad")
+assert fetched[-1] == "https://wttr.in/Hyderabad?format=j1" and "Hyderabad, Telangana, India, now: 28°C" in out, out
+assert "2026-11-19: 17–28°C, Cloudy, chance of rain up to 30%" in out and "guessed" not in out, out
+assert "guessed from the internet connection" in agent.weather("")
+ddg = ('<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.python.org%2Fdownloads%2F&amp;rut=1">'
+       'Download <b>Python</b></a> <a class="result__snippet" href="x">Python 3.15.2 &amp; more</a>'
+       '<a class="result__a" href="https://duckduckgo.com/y.js?ad=1">Ad</a><a class="result__snippet" href="x">buy</a>')
+agent.fetch = lambda url, timeout=15: ddg
+assert agent.web_search("python") == "Download Python\nhttps://www.python.org/downloads/\nPython 3.15.2 & more"
+agent.fetch = lambda url, timeout=15: "<html><head><title>t</title></head><script>x()</script><p>Hello &amp; <b>bye</b></p></html>"
+assert agent.read_webpage("https://93.184.216.34/") == "Hello & bye"
+assert all(agent.read_webpage(u).startswith("only") for u in ["http://localhost:11434/", "http://192.168.1.1/", "file:///C:/x"])
+agent.fetch = real_fetch
+assert {"weather", "web_search", "read_webpage"} <= set(agent.FUNCS) and "never open a browser to answer" in agent.system_prompt()
 print("ok")

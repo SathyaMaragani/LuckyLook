@@ -593,7 +593,8 @@ def open_website(url: str = "", search: str = "", play: bool = False):
     """Open a website in Microsoft Edge, or search on it. url: an address ("youtube.com", "https://…") or a site name.
     search: what to look for there: url "youtube", search "Shape of You Ed Sheeran" opens YouTube's results for that
     song. play=True (with url "youtube"): plays the top result straight away: for "play …", "put on …".
-    With only search, it searches the web. Asks the user first."""
+    With only search, it shows a web search in Edge. Only when the user asks to open, show or play something: to answer a
+    question use weather or web_search instead. Asks the user first."""
     play = play and bool(search)
     if play:
         url = "youtube"
@@ -640,6 +641,70 @@ def top_video(search):
     # ponytail: reads the JSON inside YouTube's page; if YouTube changes it, open_website falls back to the results
     m = re.search(r'"videoRenderer":\{"videoId":"([\w-]{11})".*?"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"', page, re.S)
     return m and ("https://www.youtube.com/watch?v=" + m[1], json.loads(f'"{m[2]}"'))
+
+
+BROWSER = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                         "Chrome/120 Safari/537.36", "Accept-Language": "en"}
+
+
+def fetch(url, timeout=15):
+    with urllib.request.urlopen(urllib.request.Request(url, headers=BROWSER), timeout=timeout) as r:
+        return r.read(3_000_000).decode(r.headers.get_content_charset() or "utf-8", "replace")
+
+
+def weather(place: str = ""):
+    """The weather now and the next 3 days' forecast, from the internet (wttr.in). place: a city or area ("Hyderabad",
+    "London"); if the user names none, their city from About the user; empty = guessed from the internet connection.
+    Use this for temperature, rain, weather questions: answer in the chat."""
+    d = json.loads(fetch("https://wttr.in/" + quote_plus(place.strip()) + "?format=j1"))
+    c, a = d["current_condition"][0], d["nearest_area"][0]
+    where = ", ".join(x[0]["value"] for x in (a["areaName"], a["region"], a["country"]) if x[0]["value"])
+    if not place.strip():
+        where += " (guessed from the internet connection, may be off: say so, and that they can name their city)"
+    out = [f"{where}, now: {c['temp_C']}°C (feels like {c['FeelsLikeC']}°C), {c['weatherDesc'][0]['value'].strip()}, "
+           f"humidity {c['humidity']}%, wind {c['windspeedKmph']} km/h {c['winddir16Point']}, rain {c['precipMM']} mm"]
+    for day in d["weather"]:
+        rain = max(int(h["chanceofrain"]) for h in day["hourly"])
+        sky = day["hourly"][len(day["hourly"]) // 2]["weatherDesc"][0]["value"].strip()
+        out.append(f"{day['date']}: {day['mintempC']}–{day['maxtempC']}°C, {sky}, chance of rain up to {rain}%")
+    return "\n".join(out)
+
+
+def web_search(query: str, limit: int = 8):
+    """Search the internet (DuckDuckGo) and get the top results' titles, addresses and snippets, to answer in the chat
+    without opening a browser: news, scores, prices, facts, anything not on this PC. read_webpage a result for more."""
+    page = fetch("https://html.duckduckgo.com/html/?q=" + quote_plus(query))
+    out = []
+    for m in re.finditer(r'class="result__a" href="([^"]+)">(.*?)</a>.*?class="result__snippet"[^>]*>(.*?)</a>', page, re.S):
+        link = re.search(r"uddg=([^&]+)", m[1])
+        url = urllib.parse.unquote(link[1]) if link else html.unescape(m[1])
+        if "duckduckgo.com/y.js" in url:  # an ad
+            continue
+        text = lambda s: html.unescape(re.sub(r"<[^>]+>", "", s)).strip()
+        out.append(f"{text(m[2])}\n{url}\n{text(m[3])}")
+        if len(out) >= limit:
+            break
+    return "\n\n".join(out) or f"no results for {query!r}"
+
+
+def read_webpage(url: str):
+    """Read a web page's text (an http or https address, like one from web_search), to answer from it in the chat."""
+    host = urllib.parse.urlsplit(url).hostname or ""
+    if not re.match(r"https?://", url) or not host:
+        return "only web addresses (http or https) can be read"
+    import ipaddress
+    import socket
+    try:
+        ip = ipaddress.ip_address(socket.gethostbyname(host))
+    except (OSError, ValueError) as e:
+        return f"error: couldn't find {host} ({e})"
+    if not ip.is_global:  # the internet only, never this PC or the home network
+        return "only public internet pages can be read"
+    page = fetch(url)
+    page = re.sub(r"(?is)<(script|style|noscript|svg|head)\b.*?</\1>|<!--.*?-->", " ", page)
+    page = re.sub(r"(?i)<(br|p|div|li|h\d|tr)\b[^>]*>", "\n", page)
+    text = html.unescape(re.sub(r"<[^>]+>", " ", page))
+    return re.sub(r"\n\s*\n+", "\n", re.sub(r"[ \t\r\f\v]+", " ", text)).strip() or "the page has no text"
 
 
 class GUID(ctypes.Structure):
@@ -1031,6 +1096,7 @@ def remember(fact: str):
 
 FUNCS = {f.__name__: f for f in [search_content, search_meaning, find_files, find_folders, read_file, list_dir, system_info,
                                   recent_files, look_at_image, look_at_screen, clipboard, browser_history, remember,
+                                  weather, web_search, read_webpage,
                                   remind_me, pc_controls, send_message, call, telegram_chats, telegram_read,
                                   telegram_search, telegram_download, open_item, open_app, open_website, close_app, move_item, create_folder,
                                   write_file, edit_file, run_command, recycle_item]}
@@ -1103,6 +1169,9 @@ Never write paths as markdown links or file:/// URLs.
 You can also open files, apps and websites, close apps, create folders, write and edit files, run commands, move or rename,
 and send things to the Recycle Bin, but only when the user asks for that. Each action asks the user to allow it; if they
 don't, leave it. When asked to make a file, write the whole content with write_file instead of pasting it into your answer.
+You have the internet: for weather or temperature use weather; for news, facts, prices, scores or anything not on this PC
+use web_search (and read_webpage for a page's details), then answer in the chat yourself. Only open_website when the user
+asks to open or show a site; never open a browser to answer a question.
 To play a song or video, open_website with url youtube, it as the search, and play=True (to just find one: no play). remind_me sets reminders.
 Volume, mute, screen brightness and play/pause/next track: pc_controls (no Allow needed).
 To message someone on Telegram or WhatsApp: send_message with app "telegram" or "whatsapp" (it opens the app itself;
