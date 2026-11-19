@@ -15,7 +15,13 @@ HERE = Path(__file__).parent
 MODELS = HERE / "voice-models"
 WAKE_WORD = True  # listen for "Hey Lucky" all the time (the mic stays open; the tray menu turns it off)
 WHISPER_MODEL = "small"  # tiny, base, small, medium: bigger understands better, takes longer
-VOICE = "en_US-lessac-medium"  # any Piper voice in voice-models/piper (python -m piper.download_voices <name>)
+VOICE = "af_heart"  # a Kokoro voice (natural): af_heart, af_bella, af_sarah (American), bf_emma, bf_isabella
+# (British), hf_alpha (Hindi)... or a Piper voice like en_US-lessac-medium (smaller, more robotic)
+SPEED = 1.0  # how fast it talks
+PIPER_VOICE = "en_US-lessac-medium"  # used when Kokoro's model isn't downloaded
+KOKORO = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
+KOKORO_LANG = {"a": "en-us", "b": "en-gb", "h": "hi", "e": "es", "f": "fr-fr", "i": "it", "j": "ja", "p": "pt-br",
+               "z": "cmn"}  # by a Kokoro voice's first letter
 SILENCE_SECONDS = 0.8  # this long quiet after speaking ends a request
 MAX_SECONDS = 20
 GIVE_UP_SECONDS = 6  # nothing said for this long: stop listening
@@ -34,7 +40,7 @@ except ImportError:
 
 
 def download():
-    """Downloads the models that aren't there yet (install.bat runs this): about 600 MB the first time."""
+    """Downloads the models that aren't there yet (install.bat runs this): about 950 MB the first time."""
     import io
     import subprocess
     import sys
@@ -45,10 +51,16 @@ def download():
         print(f"Whisper {WHISPER_MODEL} (speech to text)...")
         from faster_whisper import download_model
         download_model(WHISPER_MODEL, output_dir=str(MODELS / f"whisper-{WHISPER_MODEL}"))
-    if not (MODELS / "piper" / f"{VOICE}.onnx").exists():
-        print(f"Piper voice {VOICE} (text to speech)...")
-        subprocess.run([sys.executable, "-m", "piper.download_voices", VOICE, "--download-dir", str(MODELS / "piper")],
-                       check=True)
+    for f in ("kokoro-v1.0.onnx", "voices-v1.0.bin"):
+        if not (MODELS / "kokoro" / f).exists():
+            print(f"Kokoro {f} (the natural voice)...")
+            (MODELS / "kokoro").mkdir(exist_ok=True)
+            urllib.request.urlretrieve(KOKORO + f, MODELS / "kokoro" / (f + ".part"))
+            (MODELS / "kokoro" / (f + ".part")).rename(MODELS / "kokoro" / f)  # only whole files count
+    if not (MODELS / "piper" / f"{PIPER_VOICE}.onnx").exists():
+        print(f"Piper voice {PIPER_VOICE} (the small fallback voice)...")
+        subprocess.run([sys.executable, "-m", "piper.download_voices", PIPER_VOICE, "--download-dir",
+                        str(MODELS / "piper")], check=True)
     if not list(MODELS.glob("vosk-model-small-en-us*")):
         print("Vosk small English (the wake word)...")
         with urllib.request.urlopen("https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip", timeout=300) as r:
@@ -131,7 +143,8 @@ class Voice:
         self.speaking = threading.Event()
         self.stop_speaking = threading.Event()
         self.lock = threading.Lock()
-        self.whisper = self.piper = self.vosk = None
+        self.whisper = self.piper = self.vosk = self.tts = None
+        self.spoke = 0.0
         self.used = time.time()
         threading.Thread(target=self.run, daemon=True).start()
         threading.Thread(target=self.unload_loop, daemon=True).start()
@@ -279,14 +292,40 @@ class Voice:
             if self.whisper and time.time() - self.used > UNLOAD_MINUTES * 60:
                 with self.lock:
                     self.whisper = None  # gives back about 500 MB
+            if self.tts and not self.speaking.is_set() and time.time() - self.spoke > UNLOAD_MINUTES * 60:
+                self.tts = None  # and the voice, about 400 MB
 
     # --- speaking ---
 
     def voice(self):
+        """Piper: the fallback voice (and the self-check's, to make test speech)."""
         if not self.piper:
             from piper import PiperVoice
-            self.piper = PiperVoice.load(str(MODELS / "piper" / f"{VOICE}.onnx"))
+            self.piper = PiperVoice.load(str(MODELS / "piper" / f"{VOICE if '-' in VOICE else PIPER_VOICE}.onnx"))
         return self.piper
+
+    def engine(self):
+        """sentence -> (int16 audio, sample rate), in VOICE: Kokoro's natural voices, or Piper if Kokoro's model isn't
+        downloaded (or VOICE names a Piper voice)."""
+        self.spoke = time.time()
+        if not self.tts:
+            k = MODELS / "kokoro"
+            if "-" not in VOICE and (k / "kokoro-v1.0.onnx").exists():
+                from kokoro_onnx import Kokoro
+                model = Kokoro(str(k / "kokoro-v1.0.onnx"), str(k / "voices-v1.0.bin"))
+                lang = KOKORO_LANG.get(VOICE[0], "en-us")  # af_heart: American English, bf_emma: British, hf_: Hindi
+
+                def tts(s):
+                    audio, rate = model.create(s, voice=VOICE, speed=SPEED, lang=lang)
+                    return (np.clip(audio, -1, 1) * 32767).astype(np.int16), rate
+            else:
+                piper = self.voice()
+
+                def tts(s):
+                    chunks = list(piper.synthesize(s))
+                    return np.concatenate([c.audio_int16_array for c in chunks]), chunks[0].sample_rate
+            self.tts = tts
+        return self.tts
 
     def say(self, text, wait=False):
         """Reads text aloud, sentence by sentence (the first starts as soon as it's ready). Stops on shut_up()."""
@@ -303,17 +342,29 @@ class Voice:
 
     def _say(self, text):
         import sounddevice as sd
-        try:
-            voice = self.voice()
-            for sentence in sentences(text):
-                for chunk in voice.synthesize(sentence):
+        ready = queue.Queue()
+
+        def make():  # the next sentence is made while this one plays: no pauses between them
+            try:
+                tts = self.engine()
+                for sentence in sentences(text):
                     if self.stop_speaking.is_set():
+                        break
+                    ready.put(tts(sentence))
+            except Exception as e:  # e.g. the voice model isn't downloaded
+                print(f"voice: {e!r}", flush=True)
+            finally:
+                ready.put(None)
+        threading.Thread(target=make, daemon=True).start()
+        try:
+            while (item := ready.get()) is not None:
+                if self.stop_speaking.is_set():
+                    return
+                sd.play(*item)
+                while sd.get_stream().active:
+                    if self.stop_speaking.wait(0.05):
+                        sd.stop()
                         return
-                    sd.play(chunk.audio_int16_array, chunk.sample_rate)
-                    while sd.get_stream().active:
-                        if self.stop_speaking.wait(0.05):
-                            sd.stop()
-                            return
         finally:
             time.sleep(0.3)  # the room's echo dies down before the wake word listens again
             self.speaking.clear()

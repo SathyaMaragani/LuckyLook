@@ -748,6 +748,12 @@ def keys_to(h, *presses):
 
 def app_window(exe):
     """The biggest visible window of a running program (by its .exe name), or None."""
+    found = app_windows(exe)
+    return max(found)[1] if found else None
+
+
+def app_windows(exe):
+    """[(area, window)] of a running program's visible windows."""
     u, found = ctypes.windll.user32, []
 
     @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
@@ -765,7 +771,7 @@ def app_window(exe):
             ctypes.windll.kernel32.CloseHandle(proc)
         return True
     u.EnumWindows(each, 0)
-    return max(found)[1] if found else None
+    return found
 
 
 def to_front(h):
@@ -850,8 +856,41 @@ def call(to: str, app: str = "whatsapp", video: bool = False):
             return f"couldn't find WhatsApp's {kind} button, so no call was made"
         if not CONFIRM(f"start a WhatsApp {kind} with {shown}"):
             return NO
-        button.GetInvokePattern().Invoke()  # presses it by name: no guessing where it is on screen
-    return f"started a WhatsApp {kind} with {shown}"
+        if not to_front(h):  # clicking Allow put LuckyLook in front
+            return "couldn't bring WhatsApp back to the front, so no call was made"
+        time.sleep(0.4)
+        before = {w for _, w in app_windows(a["exe"])}
+        problem = click(auto, button, h)  # a real click: pressing it through accessibility didn't start calls
+        if problem:
+            return problem + ", so no call was made"
+    for _ in range(8):  # a call opens its own window
+        time.sleep(0.5)
+        if {w for _, w in app_windows(a["exe"])} - before:
+            return f"started a WhatsApp {kind} with {shown} (the call window is open)"
+    seen = look_at_window(h, "Is a voice or video call ringing, connecting or in progress in this WhatsApp window? "
+                             "Answer YES or NO only.")
+    if seen.strip().upper().startswith("YES"):
+        return f"started a WhatsApp {kind} with {shown}"
+    return (f"clicked WhatsApp's {kind} button for {shown}, but no call appeared: the call didn't start. "
+            "Tell the user it didn't work.")
+
+
+def click(auto, control, window):
+    """Clicks the middle of a control with the mouse, after checking it's on screen and that window (its app) is
+    what's there, not another window covering it. Returns why not, or None once clicked."""
+    u = ctypes.windll.user32
+    r = control.BoundingRectangle
+    x, y = (r.left + r.right) // 2, (r.top + r.bottom) // 2
+    if r.width() <= 0 or r.height() <= 0 or x < 0 or y < 0:
+        return "the button isn't on screen"
+    u.WindowFromPoint.restype = ctypes.c_void_p
+    u.WindowFromPoint.argtypes = [ctypes.c_int64]  # a POINT, passed by value
+    u.GetAncestor.restype = ctypes.c_void_p
+    at = u.WindowFromPoint((y << 32) | (x & 0xFFFFFFFF))
+    if not at or u.GetAncestor(ctypes.c_void_p(at), 2) != window:  # GA_ROOT: the top-level window at that point
+        return "another window is covering the button"
+    auto.Click(x, y, waitTime=0.2)
+    return None
 
 
 def open_chat(a, to):
@@ -1032,8 +1071,13 @@ Be concise. Now: {now:%A %Y-%m-%d %H:%M}. Yesterday was {yesterday:%A %Y-%m-%d}.
 
 
 # an answer that only announces an action ("I'll open...", "Opening YouTube now!") rather than giving a result
-PROMISE = re.compile(r"\b(I'?ll|I will|I'm going to|I am going to|let me (?!know))|^\W*(opening|launching|sending|playing|"
-                     r"starting|searching|setting|turning|closing|writing|creating|running)\b", re.I | re.M)
+# an answer that only announces an action ("I'll open...", "Opening YouTube now!") or claims one ("I've just started a
+# call", "Done!") without a tool having run
+PROMISE = re.compile(r"\b(I'?ll|I will|I'm going to|I am going to|let me (?!know)|I'?ve (just )?(started|sent|opened|called|"
+                     r"played|set|closed|created|written|run|launched|turned|deleted|moved)|has been (sent|opened|started|"
+                     r"set)|is now (open|playing|set|at))|^\W*(done\b|opening|launching|sending|playing|starting|searching|"
+                     r"setting|turning|closing|writing|creating|running|calling)\b", re.I | re.M)
+NOTE = re.compile(r"\s*⟨[^⟩]*⟩")  # LuckyLook's own notes of what was done: the model mustn't write them itself
 
 
 class Stopped(Exception):
@@ -1089,7 +1133,7 @@ def ask(question, history=(), on_text=lambda s: print(s, end="", flush=True), on
                              "tool, call it now. If it doesn't, give your answer again."})
             continue
         if not calls:
-            return content
+            return NOTE.sub("", content)  # notes it copied from earlier answers ("⟨done: call⟩") aren't true now
         acted = True
         for call in calls:
             fn = call["function"]

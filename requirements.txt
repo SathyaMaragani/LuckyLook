@@ -3,6 +3,7 @@ numpy
 pywebview
 faster-whisper
 piper-tts
+kokoro-onnx
 vosk
 sounddevice
 uiautomation

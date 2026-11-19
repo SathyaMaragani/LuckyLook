@@ -454,6 +454,9 @@ if (voice.MODELS / "piper").exists():
         return a[np.linspace(0, len(a) - 1, int(len(a) * 16000 / 22050)).astype(int)]
     words = set(re.findall(r"\w+", v.transcribe(speech("What is the free space on my C drive?")).lower()))
     assert {"free", "space", "drive"} <= words, words
+    audio, rate = v.engine()("Your C drive has seventy two gigabytes free.")  # the speaking voice (Kokoro if there)
+    heard = v.transcribe(audio[np.linspace(0, len(audio) - 1, int(len(audio) * 16000 / rate)).astype(int)])
+    assert {"drive", "free"} <= set(re.findall(r"\w+", heard.lower())), heard
     v.wake_on = True
     for said, expect in [(speech("Hey Lucky, what time is it?"), ["wake", "what time is it?"]),
                          (speech("Hello there, how are you?"), [])]:
@@ -461,7 +464,11 @@ if (voice.MODELS / "piper").exists():
         for b in blocks(np.concatenate([quiet(1), said, quiet(2.5)])):
             v.blocks.put(b)
             time.sleep(0.1)
-        time.sleep(4)
+        for _ in range(30):  # understanding it takes a few seconds, more on a busy PC
+            if len(events) >= len(expect) and events:
+                break
+            time.sleep(0.5)
+        time.sleep(1)
         assert events == expect, events
     v.wake_on = False
 else:
@@ -477,6 +484,12 @@ used = []
 assert agent.ask("volume?", on_text=lambda t: None, on_tool=lambda n, a: used.append(n)) == "It is at 40%." and used == ["pc_controls"]
 replies = iter([b'{"message": {"content": "Let me know if you need anything else."}}\n'])  # not a promise: no nudge
 assert agent.ask("thanks", on_text=lambda t: None).startswith("Let me know")
+# claiming it's done without a tool gets the nudge too, and notes copied from earlier answers are dropped
+replies = iter([b'{"message": {"content": "I\'ve just started another call! \\u27e8done: call\\u27e9"}}\n',
+                b'{"message": {"content": "Sorry, I didn\'t call: say who. \\u27e8done: call\\u27e9"}}\n'])
+assert agent.ask("try again", on_text=lambda t: None) == "Sorry, I didn't call: say who."
+assert all(agent.PROMISE.search(t) for t in ["Done! Calling now.", "I've just started a WhatsApp call", "The message has been sent"])
+assert not any(agent.PROMISE.search(t) for t in ["Your C drive has 72 GB free.", "Hello! How can I help?"])
 agent.urllib.request.urlopen, agent.FUNCS["pc_controls"] = real_urlopen, real_pc
 # what was really done is kept with each saved answer (for the model), and hidden on screen
 assert lucky.record([]) == "\n\n⟨nothing was done this turn⟩" and lucky.record(["send_message: sent"]) == "\n\n⟨done: send_message: sent⟩"
