@@ -9,6 +9,7 @@
     <div class="brand drag"><img src="LOGO.png" alt="">LuckyLook</div>
     <button class="newchat" id="new"><i class="ic ic-plus"></i>New chat</button>
     <nav id="chats"></nav>
+    <button class="newchat settings-btn" id="open-settings"><i class="ic ic-gear"></i>Settings</button>
     <div class="side-foot" id="foot">Runs on this PC · nothing leaves it</div>
   </aside>
   <main class="center">
@@ -19,6 +20,30 @@
       <button class="icon-btn close" id="close" title="Close"><i class="ic ic-close"></i></button>
     </div>
     <div id="log" class="log"></div>
+    <div id="settings" class="log settings hidden">
+      <div class="set-wrap">
+        <h2>Settings</h2>
+        <section class="card">
+          <h4><i class="ic ic-mic"></i>Voice</h4>
+          <label class="opt"><span><b>Listen for “Hey Lucky”</b><small>The mic stays open while this is on; Windows shows its mic icon.</small></span><input type="checkbox" class="switch" data-set="wake"></label>
+          <label class="opt"><span><b>Speak answers</b><small>Spoken questions get a spoken answer too (off: text only).</small></span><input type="checkbox" class="switch" data-set="speak"></label>
+          <div class="opt"><span><b>Voice</b><small>All run on this PC.</small></span><span class="row-btns"><select id="voice-pick"></select><button class="btn" data-do="hear">Hear it</button></span></div>
+        </section>
+        <section class="card">
+          <h4><i class="ic ic-chat"></i>Telegram</h4>
+          <div class="opt"><span><b id="tg-status">…</b><small>Read, search, download and send with your own Telegram account.</small></span><span class="row-btns"><button class="btn primary" id="tg-connect" data-do="telegram">Connect…</button><button class="btn hidden" id="tg-disconnect">Disconnect</button></span></div>
+        </section>
+        <section class="card">
+          <h4><i class="ic ic-panel"></i>LuckyLook</h4>
+          <label class="opt"><span><b>Tab at the top of the screen</b><small>Hover to pull it down, click to open the popup.</small></span><input type="checkbox" class="switch" data-set="tab"></label>
+          <div class="opt"><span><b>Shortcut</b><small id="hotkey-now"></small></span><button class="btn" data-do="hotkey">Change…</button></div>
+          <div class="opt"><span><b>About me</b><small>What LuckyLook should know about you, and the People list for names.</small></span><button class="btn" data-do="aboutme">Edit…</button></div>
+          <div class="opt"><span><b>Private folders and windows</b><small>Places LuckyLook must never look.</small></span><button class="btn" data-do="private">Edit…</button></div>
+          <div class="opt"><span><b>Index</b><small>Find new files now instead of at the next 6-hour pass.</small></span><button class="btn" data-do="reindex">Reindex now</button></div>
+          <div class="opt"><span><b>AI model</b><small id="model-now"></small></span><button class="btn" data-do="restart">Restart LuckyLook</button></div>
+        </section>
+      </div>
+    </div>
     <div class="composer-wrap">
       <div class="composer">
         <textarea id="q" rows="1" placeholder="Ask anything about this PC…" spellcheck="false"></textarea>
@@ -99,6 +124,7 @@ async function chats() {
 
 async function openChat(c) {
   if (document.body.classList.contains("busy")) return;
+  showSettings(false);
   chat = c.id;
   $("#title").textContent = c.title;
   log.innerHTML = "";
@@ -109,6 +135,7 @@ async function openChat(c) {
 
 function fresh() {
   if (document.body.classList.contains("busy")) return;
+  showSettings(false);
   chat = "";
   $("#title").textContent = "New chat";
   log.innerHTML = "";
@@ -140,6 +167,38 @@ $("#min").onclick = () => api().minimize();
 $("#close").onclick = () => api().close();
 $("#panel").onclick = () => document.body.classList.toggle("no-panel");
 $("#reindex").onclick = () => { api().reindex(); LL.toast("Reindexing all drives in the background"); };
+// ---------- Settings ----------
+function showSettings(on) {
+  $("#settings").classList.toggle("hidden", !on);
+  log.classList.toggle("hidden", on);
+  $(".composer-wrap").classList.toggle("hidden", on);
+  $("#title").textContent = on ? "Settings" : (chat ? $(".chatrow.on .t")?.textContent || "Chat" : "New chat");
+  if (on) api().settings().then(fill);
+}
+function fill(s) {
+  for (const box of document.querySelectorAll("[data-set]")) box.checked = !!s[box.dataset.set];
+  const pick = $("#voice-pick");
+  pick.innerHTML = "";
+  for (const [id, label] of s.voices) pick.append(Object.assign(el("option", "", label), { value: id, selected: id === s.voice }));
+  $("#tg-status").textContent = s.telegram ? "Connected" + (s.telegram_name ? " as " + s.telegram_name : "") : "Not connected";
+  $("#tg-connect").classList.toggle("hidden", s.telegram);
+  $("#tg-disconnect").classList.toggle("hidden", !s.telegram);
+  $("#hotkey-now").textContent = "Opens the popup from anywhere: " + s.hotkey;
+  $("#model-now").textContent = s.model + " · after changing settings by hand, restart";
+}
+$("#open-settings").onclick = () => showSettings(true);
+document.querySelectorAll("[data-set]").forEach((box) => (box.onchange = () => api().set(box.dataset.set, box.checked).then(fill)));
+$("#voice-pick").onchange = (e) => api().set("voice", e.target.value).then(fill);
+document.querySelectorAll("[data-do]").forEach((b) => (b.onclick = () => {
+  api().do(b.dataset.do);
+  if (b.dataset.do === "telegram") LL.toast("A window opened: follow its steps, then come back here.");
+  if (b.dataset.do === "reindex") LL.toast("Reindexing all drives in the background");
+}));
+$("#tg-disconnect").onclick = () => {
+  if (confirm("Disconnect Telegram? LuckyLook logs out and forgets the login on this PC.")) api().do("disconnect_telegram").then(() => api().settings().then(fill));
+};
+window.addEventListener("focus", () => { if (!$("#settings").classList.contains("hidden")) api().settings().then(fill); });
+
 // the title areas move the window: Windows does the dragging itself, so it follows the mouse smoothly
 document.addEventListener("mousedown", (e) => {
   if (e.button === 0 && e.target.closest(".drag") && !e.target.closest("button")) { e.preventDefault(); api().drag(); }

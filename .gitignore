@@ -17,3 +17,6 @@ chats/
 prefs.json
 voice-models/
 @AutomationLog.txt
+telegram.session
+telegram.session-journal
+telegram.json

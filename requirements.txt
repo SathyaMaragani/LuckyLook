@@ -7,3 +7,4 @@ kokoro-onnx
 vosk
 sounddevice
 uiautomation
+telethon

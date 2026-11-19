@@ -427,6 +427,53 @@ assert not agent.same_person("Yeshwanth", "Saved Messages") and not agent.same_p
 assert not agent.same_person("Ravi", "") and not agent.same_person("Ravi Teja", "Ravi")
 assert agent.send_message("x", "y", app="signal") == "can send on Telegram and WhatsApp only"
 assert agent.call("x", app="telegram").startswith("can call on WhatsApp only")
+# the tray menu builds (it once failed on every right-click), with "Hey Lucky" ticked when on
+fake_tray = types.SimpleNamespace(MENU=lucky.Tray.MENU, ticked=lambda kind: kind == "wake")
+menu = lucky.Tray.items(fake_tray)
+assert (0x8, 10, 'Listen for "Hey Lucky"') in menu and (0, 11, "Connect Telegram…") in menu and (0x800, 0, None) in menu
+
+import tg  # noqa: E402
+# the app's Settings page: settings change and are kept; unknown ones and voices are refused
+with tempfile.TemporaryDirectory() as td:
+    real_prefs, lucky.PREFS = lucky.PREFS, Path(td, "prefs.json")
+    shh = types.SimpleNamespace(shut_up=lambda: None, tts="loaded")
+    fake = types.SimpleNamespace(prefs={"speak": True, "wake": False}, voice=shh, widget_on=True,
+                                 set_wake=lambda on: fake.prefs.__setitem__("wake", on))
+    page_api, real_voice = lucky.Api(fake), voice.VOICE
+    real_connected, tg.connected = tg.connected, lambda: False  # the test never touches a real Telegram login
+    s = page_api.set("voice", "bf_emma")
+    assert s["voice"] == "bf_emma" and voice.VOICE == "bf_emma" and shh.tts is None and not s["telegram"] in (None,)
+    assert page_api.set("speak", False)["speak"] is False and page_api.set("tab", False)["tab"] is False
+    assert json.loads(lucky.PREFS.read_text()) == {"speak": False, "wake": False, "voice": "bf_emma", "tab": False}
+    for bad in (("voice", "zz_nobody"), ("hack", 1)):
+        with contextlib.suppress(ValueError):
+            page_api.set(*bad)
+            assert bad[0] == "voice", bad  # an unknown voice is just ignored, an unknown setting raises
+    assert voice.VOICE == "bf_emma"
+    voice.VOICE, lucky.PREFS, tg.connected = real_voice, real_prefs, real_connected
+
+# Telegram's API tools, without an account: names, dates, how messages read, and what happens before connecting
+import tg  # noqa: E402
+assert tg.match("Yeshwanth", ["Yeshwanth KL", "Ravi", "Yashwanth Rao", "Family"]) == [0, 2]
+assert tg.match("ravi teja", ["Ravi", "Ravi Teja"]) == [1] and tg.match("x", []) == []
+assert tg.when("") is None and tg.when("2026-11-19").hour == 0 and tg.when("2026-11-19 10:30").minute == 30
+dt = datetime.datetime(2026, 11, 19, 9, 5, tzinfo=datetime.timezone.utc)
+doc = types.SimpleNamespace(id=7, out=False, date=dt, message="the bill\nis here", sender=types.SimpleNamespace(first_name="Ravi"),
+                            media=True, photo=None, video=None, voice=None, audio=None, sticker=None,
+                            file=types.SimpleNamespace(name="bill.pdf", size=2_100_000))
+assert tg.line(doc).startswith("[7] ") and tg.line(doc).endswith(" Ravi: the bill is here [document: bill.pdf, 2.1 MB]")
+tg._sent[:] = [time.time() - 3700] + [time.time() - 60] * (tg.SENDS_PER_HOUR - 1)  # one is over an hour old
+assert tg.send_limit() is None
+tg._sent.append(time.time())
+assert "in the last hour" in tg.send_limit() and "about 60 minutes" in tg.send_limit()
+real_find, tg.find_chat = tg.find_chat, lambda to: ("entity", "Yeshwanth KL")
+real_conn, tg.connected = tg.connected, lambda: True
+assert agent.send_message("Yeshwanth", "hi").endswith(", so nothing was sent")  # over the limit: not even asked
+tg.find_chat, tg.connected = real_find, real_conn
+tg._sent.clear()
+real_keys_file, tg.KEYS = tg.KEYS, Path(tempfile.gettempdir()) / "no-such-telegram.json"
+assert agent.run_tool("telegram_chats", {}).startswith("error: Telegram isn't connected yet")
+tg.KEYS = real_keys_file
 real_keys, agent.keys = agent.keys, lambda *p: (_ for _ in ()).throw(AssertionError("typed into the wrong window"))
 assert agent.keys_to(1, "Hi", 0x0D) is False  # window 1 isn't in front: nothing is typed
 agent.keys = real_keys

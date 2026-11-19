@@ -34,12 +34,15 @@ import webview  # noqa: E402
 
 import agent  # noqa: E402
 import indexer  # noqa: E402
+import tg  # noqa: E402
 import voice  # noqa: E402
 
 MOD_NOREPEAT, WM_HOTKEY = 0x4000, 0x312
 HOTKEY = "Ctrl+Alt+L"  # change it from the tray menu (saved in local_settings.py)
 CHAT = HERE / "chat.json"  # the popup's conversation, so it's still there after a restart
 CHATS = HERE / "chats"  # the app's conversations, one file each
+VOICES = [("af_heart", "Heart (American)"), ("af_bella", "Bella (American)"), ("af_sarah", "Sarah (American)"),
+          ("bf_emma", "Emma (British)"), ("bf_isabella", "Isabella (British)"), ("hf_alpha", "Alpha (Hindi)")]
 PREFS = HERE / "prefs.json"  # what the toggles were left at: speak answers, listen for "Hey Lucky"
 REINDEX_HOURS = 6  # a full pass of all drives this often (and from the tray menu: Reindex now)
 LIVE = False  # True: also watch for changes, so a file you save, rename or delete shows up within LIVE_SECONDS.
@@ -204,6 +207,8 @@ STEPS = {  # what each tool is doing, in plain words, and which argument to show
     "open_website": ("Opening in Edge", "search"), "close_app": ("Closing", "name"), "move_item": ("Moving", "path"),
     "create_folder": ("Creating a folder", "path"), "write_file": ("Writing", "path"), "edit_file": ("Editing", "path"),
     "run_command": ("Running a command", "command"), "send_message": ("Messaging", "to"), "call": ("Calling", "to"),
+    "telegram_chats": ("Checking Telegram", ""), "telegram_read": ("Reading Telegram", "chat"),
+    "telegram_search": ("Searching Telegram", "query"), "telegram_download": ("Downloading from Telegram", "chat"),
     "pc_controls": ("Changing the PC's controls", ""), "recycle_item": ("Sending to the Recycle Bin", "path"),
 }
 SEARCHES = {"search_content", "search_meaning", "find_files", "find_folders", "list_dir", "recent_files", "browser_history"}
@@ -248,7 +253,8 @@ def list_chats():
 
 
 ACTIONS = {"open_item", "open_app", "open_website", "close_app", "move_item", "create_folder", "write_file", "edit_file",
-           "run_command", "recycle_item", "send_message", "call", "pc_controls", "remind_me", "remember"}
+           "run_command", "recycle_item", "send_message", "call", "telegram_download", "pc_controls", "remind_me",
+           "remember"}
 RECORD = re.compile(r"\n\n⟨(done|nothing was done)[^⟩]*⟩$")
 
 
@@ -421,6 +427,8 @@ class Lucky:
         except (OSError, ValueError):
             self.prefs = {"speak": True, "wake": voice.WAKE_WORD}
         self.fullscreen, self.listen_where, self.spoken_turn = False, "popup", False
+        voice.VOICE = self.prefs.get("voice", voice.VOICE)  # chosen on the Settings page
+        self.widget_on = self.prefs.get("tab", self.widget_on)
         self.voice = voice.Voice(on_wake=lambda: self.q.put(("wake", None)), on_heard=self.heard,
                                  on_level=self.level, paused=lambda: self.fullscreen)
         self.api = api = Api(self)
@@ -871,6 +879,12 @@ class Lucky:
         subprocess.Popen([str(exe if exe.exists() else sys.executable), str(HERE / "lucky.py"), "--restarted"], cwd=HERE)
         self.quit()
 
+    def connect_telegram(self):
+        """A console window where the user connects their Telegram once (app id, phone number, code): tg.py login."""
+        exe = Path(sys.executable).with_name("python.exe")  # with a console, to type into
+        subprocess.Popen([str(exe if exe.exists() else sys.executable), str(HERE / "tg.py"), "login"], cwd=HERE,
+                         creationflags=0x10)  # CREATE_NEW_CONSOLE
+
     def edit(self, name, example):
         """Opens one of LuckyLook's settings files in Notepad, starting it from its example if it's not there yet."""
         path = HERE / name
@@ -930,6 +944,53 @@ class Api:
 
     def hush(self):
         self._l.voice.shut_up()
+
+    # --- the app's Settings page ---
+
+    def settings(self):
+        p, name, linked = self._l.prefs, "", tg.connected()
+        if linked:
+            try:
+                name = tg.me()
+            except tg.NotConnected:  # the files are there but the login never finished
+                linked = False
+            except Exception as e:  # e.g. offline: still shows as connected
+                print(f"telegram: {e!r}", flush=True)
+        return {"speak": p["speak"], "wake": p["wake"], "voice": voice.VOICE, "voices": VOICES, "tab": self._l.widget_on,
+                "hotkey": HOTKEY, "model": agent.MODEL, "telegram": linked, "telegram_name": name}
+
+    def set(self, name, value):
+        """Changes one setting from the Settings page; returns them all again."""
+        p = self._l.prefs
+        if name == "speak":
+            p["speak"] = bool(value)
+            if not value:
+                self._l.voice.shut_up()
+        elif name == "wake":
+            self._l.set_wake(bool(value))
+        elif name == "voice" and value in dict(VOICES):
+            p["voice"] = voice.VOICE = value
+            self._l.voice.tts = None  # the next answer loads the new voice
+        elif name == "tab":
+            p["tab"] = self._l.widget_on = bool(value)  # tab_loop moves the tab within a second
+        else:
+            raise ValueError(f"no setting {name!r}")
+        save_prefs(p)
+        return self.settings()
+
+    def do(self, what):
+        """A button on the Settings page."""
+        lk = self._l
+        if what == "hear":
+            lk.voice.say("Hi! This is how I sound. Ask me anything about your PC.")
+        elif what == "telegram":
+            lk.connect_telegram()
+        elif what == "disconnect_telegram":
+            tg.disconnect()
+        elif what in ("hotkey", "aboutme", "private", "restart", "reindex"):
+            lk.q.put((what, None))
+        else:
+            raise ValueError(f"no button {what!r}")
 
     def decide(self, cid, ok):
         done, answer = self._l.waiting.get(cid, (None, None))
@@ -1044,6 +1105,7 @@ SETTINGS = {  # tray menu choices that the pump thread carries out
     "restart": Lucky.restart,
     "reindex": lambda p: p.reindex.set(),  # index_loop starts a full pass within a few seconds
     "wake": lambda p: p.set_wake(not p.prefs["wake"]),
+    "telegram": lambda p: p.connect_telegram(),
 }
 
 
@@ -1112,7 +1174,7 @@ class Tray:
     """LuckyLook's icon in the system tray. Click: open or close the popup. Right-click: a menu.
     Runs on the hotkey thread (its message loop delivers the clicks) and talks to the rest only through q."""
     MENU = [(1, f"Open LuckyLook\t{HOTKEY}", "toggle"), (9, "Open LuckyLook app", "app"),
-            (10, 'Listen for "Hey Lucky"', "wake"),
+            (10, 'Listen for "Hey Lucky"', "wake"), (11, "Connect Telegram…", "telegram"),
             (2, "Show or hide the top tab", "widget"), (0, None, None),
             (8, "Reindex now", "reindex"), (4, "About me…", "aboutme"), (5, "Private folders and windows…", "private"),
             (6, "Change hotkey…", "hotkey"), (7, "Restart LuckyLook (applies settings)", "restart"), (0, None, None),
@@ -1165,11 +1227,15 @@ class Tray:
             self.q.put(("app" if msg == OPEN_APP else "toggle", None))
         return u32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
+    def items(self):
+        """[(flags, id, text)] for the menu: 0x800 a separator, 0x8 a ticked item."""
+        return [(0x800, 0, None) if not cid else (0x8 if self.ticked(kind) else 0, cid, text)
+                for cid, text, kind in self.MENU]
+
     def menu(self):
         m = u32.CreatePopupMenu()
-        for cid, text, _ in self.MENU:
-            ticked = 0x8 if cid and self.ticked(kind) else 0  # MF_CHECKED
-            u32.AppendMenuW(m, 0x800 if not cid else ticked, cid, text)  # 0x800: separator
+        for flags, cid, text in self.items():
+            u32.AppendMenuW(m, flags, cid, text)
         pt = wintypes.POINT()
         u32.GetCursorPos(ctypes.byref(pt))
         u32.SetForegroundWindow(self.hwnd)  # else the menu doesn't close when you click elsewhere

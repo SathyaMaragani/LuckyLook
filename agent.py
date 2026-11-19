@@ -25,11 +25,13 @@ import time
 import urllib.error
 import urllib.request
 import winreg
+import contextlib
 from contextlib import closing
 from pathlib import Path
 from urllib.parse import quote_plus
 
 import indexer
+import tg
 
 HERE = Path(__file__).parent
 
@@ -818,6 +820,20 @@ def send_message(to: str, text: str, app: str = "telegram"):
     a = CHAT_APPS.get(app.lower().replace(" ", ""))
     if not a:
         return f"can send on {' and '.join(c['name'] for c in CHAT_APPS.values())} only"
+    found = None
+    if a is CHAT_APPS["telegram"] and tg.connected():  # through Telegram's API: no typing into the window
+        with contextlib.suppress(tg.NotConnected):  # the login never finished: type into the window instead
+            found = tg.find_chat(to)
+    if found is not None:
+        if tg.send_limit():  # checked before asking, so the user isn't asked for something that can't go
+            return tg.send_limit() + ", so nothing was sent"
+        if isinstance(found, str):
+            return found + ", so nothing was sent"
+        entity, title = found
+        if not CONFIRM(f"send this Telegram message to {title}:\n\n{text}\n"):
+            return NO
+        tg.send(entity, text)
+        return f"sent to {title} on Telegram"
     opened = open_chat(a, to)
     if isinstance(opened, str):
         return opened + ", so nothing was sent"
@@ -833,6 +849,38 @@ def send_message(to: str, text: str, app: str = "telegram"):
     if not keys_to(h, 0x0D):  # typed but not sent: it's left in the box, not sent anywhere else
         return f"you switched to another window before it was sent; the message is typed in {name}, not sent"
     return f"sent to {shown} on {name}"
+
+
+def telegram_chats(unread_only: bool = False, limit: int = 20):
+    """The user's Telegram chats, newest first: name | unread count | time of the last message | the last message.
+    unread_only=True: only chats with unread messages ("any new Telegram messages?", "summarise my unread")."""
+    return tg.chats(limit, unread_only)
+
+
+def telegram_read(chat: str, limit: int = 30, since: str = ""):
+    """Read a Telegram chat's recent messages, to answer or summarise ("what did Yeshwanth say today?").
+    chat: its name (a person, a group, a channel, or "Saved Messages"). since: "YYYY-MM-DD" or "YYYY-MM-DD HH:MM" for
+    only the messages from then. Each line: [message id] time sender: text [file or photo, if any]."""
+    return tg.read(chat, limit, since)
+
+
+def telegram_search(query: str, chat: str = ""):
+    """Search the user's Telegram messages for words ("the message with the hotel address"), in every chat or in one
+    chat. Each line: chat | [message id] time sender: text [file]."""
+    return tg.search(query, chat)
+
+
+def telegram_download(chat: str, message_id: int = 0, kind: str = ""):
+    """Download a file, photo, video or voice message from a Telegram chat into Downloads\\Telegram\\<chat>.
+    message_id: from telegram_read or telegram_search; or 0 for the newest one, of a kind if given ("photo", "video",
+    "pdf", "document", "voice"). Asks the user first."""
+    picked = tg.pick_media(chat, message_id, kind)
+    if isinstance(picked, str):
+        return picked
+    m, title, what = picked
+    if not CONFIRM(f"download {what} from {title} into Downloads\\Telegram"):
+        return NO
+    return f"saved: {tg.download(m, title)}"
 
 
 def call(to: str, app: str = "whatsapp", video: bool = False):
@@ -983,7 +1031,8 @@ def remember(fact: str):
 
 FUNCS = {f.__name__: f for f in [search_content, search_meaning, find_files, find_folders, read_file, list_dir, system_info,
                                   recent_files, look_at_image, look_at_screen, clipboard, browser_history, remember,
-                                  remind_me, pc_controls, send_message, call, open_item, open_app, open_website, close_app, move_item, create_folder,
+                                  remind_me, pc_controls, send_message, call, telegram_chats, telegram_read,
+                                  telegram_search, telegram_download, open_item, open_app, open_website, close_app, move_item, create_folder,
                                   write_file, edit_file, run_command, recycle_item]}
 TYPES = {str: "string", int: "integer", float: "number", bool: "boolean"}
 
@@ -1057,7 +1106,9 @@ don't, leave it. When asked to make a file, write the whole content with write_f
 To play a song or video, open_website with url youtube, it as the search, and play=True (to just find one: no play). remind_me sets reminders.
 Volume, mute, screen brightness and play/pause/next track: pc_controls (no Allow needed).
 To message someone on Telegram or WhatsApp: send_message with app "telegram" or "whatsapp" (it opens the app itself;
-don't open_app first; if the user doesn't say which, ask). To call someone: call (WhatsApp; video=True for video). Send the words the
+don't open_app first; if the user doesn't say which, ask). To call someone: call (WhatsApp; video=True for video).
+Telegram's own messages: telegram_chats (what's new, unread), telegram_read (a chat's messages), telegram_search,
+telegram_download (files and photos). Read before answering about someone's messages; don't guess them. Send the words the
 user asked for exactly ("send Hi to Yeshwanth" -> text "Hi"), and use names as written under People in About the user.
 Only say something is done when the tool's result says so; if it says "error", tell the user it didn't work.
 Copy file and folder names exactly as the tools return them. Don't guess what names mean or invent details.
